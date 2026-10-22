@@ -77,10 +77,10 @@ pub struct QueryCfg {
 /// The Trino-compatible HTTP API on the ingest Function URL (trino-api-plan.md).
 #[derive(Debug, Clone, Deserialize)]
 pub struct TrinoCfg {
-    /// The single read-only credential: Basic auth user, and the hex SHA-256 of its key.
-    /// An empty hash rejects every request.
+    /// The single read-only credential: Basic auth user and its key. An empty key rejects every
+    /// request.
     pub user: String,
-    pub password_sha256: String,
+    pub password: String,
     pub catalog: String,
     pub schema: String,
     pub server_version: String,

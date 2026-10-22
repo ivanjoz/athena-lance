@@ -213,7 +213,7 @@ mod tests {
     fn cfg() -> TrinoCfg {
         TrinoCfg {
             user: "u".into(),
-            password_sha256: "x".into(),
+            password: "x".into(),
             catalog: "lance".into(),
             schema: "default".into(),
             server_version: "476".into(),

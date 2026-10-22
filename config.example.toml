@@ -94,14 +94,12 @@ memory_fraction = 0.6
 
 [trino]
 # Trino-compatible HTTP API on the ingest Function URL (trino-api-plan.md), for Tableau / DBeaver.
-# A single read-only credential: Basic auth with this user and a random key. Only the key's
-# SHA-256 lives here (this file goes into the Lambda zip); keep the key itself in .secrets/trino-key
-# (gitignored). Generate one:
-#   openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n' > .secrets/trino-key
-#   printf '%s' "$(cat .secrets/trino-key)" | sha256sum
-# An empty hash rejects every request.
+# A single read-only credential: Basic auth with this user and key (config.toml is gitignored, but
+# it goes into the Lambda zip). Use a random key:
+#   openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n'
+# An empty key rejects every request.
 user = "tableau"
-password_sha256 = ""
+password = ""
 catalog = "lance"
 schema = "default"
 # Reported by version() and /v1/info.

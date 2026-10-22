@@ -183,16 +183,15 @@ The URL is public (auth type `NONE`: Trino drivers can't sign SigV4), so the ser
 - **One credential** (decision 1): Basic auth `user:password`, required on every request. The
   password is the API key. It can run read-only SQL on every table and nothing else. JDBC only
   sends a password over TLS (`SSL=true`); the Function URL is HTTPS on 443.
-- **In `config.toml`, as a hash:** `[trino] user` and `password_sha256` (hex SHA-256 of the key).
-  `config.toml` goes inside the Lambda zip (and is gitignored, `config.example.toml` is the
-  template), so it never holds the key itself. Because the
-  key is random (32 bytes, base64url, generated once with `openssl rand -base64 32` or
-  `lance-cli trino-key`), plain SHA-256 is enough: there is nothing to brute-force by dictionary,
-  so no salt or slow hash is needed. The key is handed to Tableau users out of band.
-- **Rotation:** generate a new key, replace `password_sha256`, `deploy/deploy.sh`. Old key stops
-  working when the new zip is live.
-- **Check:** constant-time comparison of `sha256(password)` with the configured hash; the user name
-  must match too. `X-Trino-User` must equal the Basic user (no impersonation).
+- **In `config.toml`:** `[trino] user` and `password` (the key: random, 32 bytes base64url,
+  `openssl rand -base64 32`). `config.toml` is gitignored (`config.example.toml` is the template)
+  and goes inside the Lambda zip, so the key is readable by whoever can read the function's code.
+  The key is handed to Tableau users out of band.
+- **Rotation:** generate a new key, replace `password`, `deploy/deploy.sh`. Old key stops working
+  when the new zip is live.
+- **Check:** constant-time comparison of the SHA-256 of the given and configured keys (equal
+  lengths, so the key's length doesn't leak); the user name must match too. `X-Trino-User` must
+  equal the Basic user (no impersonation).
 - **No IP allowlist** (decision 3). Failed logins are logged (user, source IP; never the password
   or the header); a CloudWatch metric filter alarms on bursts.
 - **Concurrency:** queries share `ingest`'s concurrency with writes (ADR-011 trade-off). A flood of
@@ -383,7 +382,7 @@ literals from `EXECUTE … USING` (parsed as SQL literals, so types follow Trino
 
 Done: streaming spike in the real binary, deployed to both functions; Function URL created on
 `smartberry-lance-ingest` (`RESPONSE_STREAM`, auth `NONE`, public `InvokeFunctionUrl` +
-`InvokeFunction` via URL); credential in `[trino]` (key in `.secrets/trino-key`, gitignored).
+`InvokeFunction` via URL); credential in `[trino]` of the gitignored `config.toml`.
 Implemented already (ahead of Phase 1): auth, `/v1/info`, `POST /v1/statement` with streamed
 `QueryResults`, Arrow → Trino encoder, gzip, the caps and warnings of §6, `lance-cli` running URL
 events locally.
@@ -416,12 +415,12 @@ run by the user against `ingest_url`).
 ### Phase 1 — Protocol core
 - `main.rs` event split with `FunctionResponse`; `trino/http.rs` (events, routing, prelude),
   `trino/stream.rs` (producer task, bounded channel, gzip, caps), `trino/auth.rs` (Basic auth
-  against `[trino] user` / `password_sha256`), `trino/protocol.rs` (`QueryResults` writer in the
+  against `[trino] user` / `password`), `trino/protocol.rs` (`QueryResults` writer in the
   order of §2.2, stats, warnings, error mapping), `trino/encode.rs` (§2.3).
 - `statement::run` → the existing planning path of `query::run` (table resolution, read-only plan,
   memory pool), then the DataFusion stream instead of `collect_json`.
 - Caps and time limits of §6, with the truncation warning.
-- `lance-cli trino-key`: prints a new random key and its SHA-256 to paste into `config.toml`.
+- `lance-cli trino-key`: prints a new random key to paste into `config.toml`.
 - Tests: encoder per type (incl. nulls, tz, decimals, NaN), document order and validity when cut by
   rows / size / time and on mid-stream errors, with and without gzip, event parsing, auth (wrong
   user, wrong key, missing header), `Invoke` path unchanged.
@@ -485,9 +484,9 @@ etc.) fail with "metadata table is not supported"; add them if Tableau or DBeave
 ingest_url = ""                 # filled once the Function URL exists (Phase 0 / 4)
 
 [trino]
-# The single read-only credential (§4). The key itself is never stored here, only its SHA-256.
+# The single read-only credential (§4); config.toml is gitignored.
 user = "tableau"
-password_sha256 = ""            # lance-cli trino-key
+password = ""                   # random key (openssl rand -base64 32)
 catalog = "lance"
 schema = "default"
 server_version = "476"          # reported by version() and /v1/info [VERIFY what drivers check]

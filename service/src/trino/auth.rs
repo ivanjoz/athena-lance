@@ -1,6 +1,6 @@
-//! Basic auth against the single read-only credential in `[trino]`: the user name and the
-//! SHA-256 of a random key. The key is random, so a plain hash is enough (nothing to guess by
-//! dictionary); the comparison is constant-time.
+//! Basic auth against the single read-only credential in `[trino]`: the user name and a random
+//! key. Both keys are hashed before comparing, so the constant-time comparison always runs over
+//! equal lengths and doesn't reveal the key's length.
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -11,7 +11,7 @@ use crate::config::TrinoCfg;
 
 /// The authenticated user, or why the request was rejected (logged, never sent back).
 pub fn check(cfg: &TrinoCfg, req: &HttpRequest) -> Result<String, &'static str> {
-    if cfg.password_sha256.is_empty() {
+    if cfg.password.is_empty() {
         return Err("no credential configured");
     }
     let encoded = req
@@ -21,18 +21,14 @@ pub fn check(cfg: &TrinoCfg, req: &HttpRequest) -> Result<String, &'static str> 
     let decoded = BASE64.decode(encoded.trim()).map_err(|_| "malformed authorization")?;
     let decoded = String::from_utf8(decoded).map_err(|_| "malformed authorization")?;
     let (user, password) = decoded.split_once(':').ok_or("malformed authorization")?;
-    let hash = hex(&Sha256::digest(password.as_bytes()));
-    if user != cfg.user || !constant_time_eq(hash.as_bytes(), cfg.password_sha256.to_ascii_lowercase().as_bytes()) {
+    let (given, expected) = (Sha256::digest(password.as_bytes()), Sha256::digest(cfg.password.as_bytes()));
+    if user != cfg.user || !constant_time_eq(&given, &expected) {
         return Err("wrong user or key");
     }
     if req.header("x-trino-user").is_some_and(|u| u != user) {
         return Err("X-Trino-User differs from the authenticated user");
     }
     Ok(user.to_string())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -47,8 +43,7 @@ mod tests {
     fn cfg() -> TrinoCfg {
         TrinoCfg {
             user: "tableau".into(),
-            // sha256("secret")
-            password_sha256: "2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b".into(),
+            password: "secret".into(),
             catalog: "lance".into(),
             schema: "default".into(),
             server_version: "476".into(),
@@ -77,7 +72,7 @@ mod tests {
         assert!(check(&cfg(), &req(Some("tableau:secret"), Some("other"))).is_err());
         assert!(check(&cfg(), &req(None, None)).is_err());
         let mut empty = cfg();
-        empty.password_sha256.clear();
+        empty.password.clear();
         assert!(check(&empty, &req(Some("tableau:secret"), None)).is_err());
     }
 }
