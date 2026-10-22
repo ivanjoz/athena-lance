@@ -4,8 +4,8 @@
 //!   lance-cli @request.json
 //!
 //! Prints the response envelope, exactly as the Lambda would return it. A Function URL event
-//! (`{"requestContext":{"http":...},...}`) goes to the Trino HTTP API instead: the status and
-//! headers go to stderr and the streamed body to stdout.
+//! (`{"requestContext":{"http":...},...}`) goes to the HTTP APIs instead (/v1/lance or Trino):
+//! the status and headers go to stderr and the streamed body to stdout.
 
 use std::io::Write;
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use std::sync::Arc;
 use futures::StreamExt;
 use lance_service::app::App;
 use lance_service::config::Config;
-use lance_service::{handler, trino};
+use lance_service::{api, handler, trino};
 
 fn main() -> anyhow::Result<()> {
     let cfg = Config::load()?;
@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
             let payload: serde_json::Value = serde_json::from_str(&text)?;
             let request_id = format!("local-{}", uuid::Uuid::new_v4());
             if trino::is_http_event(&payload) {
-                let response = trino::handle(app.clone(), &request_id, payload).await;
+                let response = api::handle_http(app.clone(), &request_id, payload).await;
                 eprintln!("{:?}", response.metadata_prelude);
                 let mut body = response.stream;
                 let mut stdout = std::io::stdout().lock();

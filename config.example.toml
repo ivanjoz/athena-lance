@@ -28,8 +28,8 @@ staging_prefix = "staging"
 control_function = "<prefix>-lance-control"
 ingest_function = "<prefix>-lance-ingest"
 # Function URL of ingest (auth NONE, invoke mode RESPONSE_STREAM): the Trino-compatible HTTP API
-# for Tableau / DBeaver ([trino]). Only the read-only Trino code is reachable through it; the
-# service checks the Basic credential. control has no URL.
+# for Tableau / DBeaver ([trino], Basic credential) and the read-only JSON API at /v1/lance ([api],
+# Bearer key). Only read ops are reachable through it. control has no URL.
 ingest_url = "https://<url-id>.lambda-url.us-west-2.on.aws/"
 # Execution role of both functions.
 role_arn = "arn:aws:iam::<aws-account-id>:role/<lambda-role>"
@@ -117,6 +117,14 @@ max_result_mb = 100
 # Whole response (execution + sending). The first row must still be ready within
 # query.max_timeout_ms.
 max_stream_seconds = 300
+
+[api]
+# Read-only JSON API on the ingest Function URL: POST <ingest_url>v1/lance with the same body as a
+# direct Invoke and `Authorization: Bearer <read_key>`. For clients that can't invoke the functions
+# with IAM (another AWS account, a developer machine); lancego uses it when Config.Endpoint is set.
+# Only read ops (query, explain, list_tables, describe_table, table_info, list_partitions,
+# get_batch); writes answer READ_ONLY. An empty key rejects every request.
+read_key = ""
 
 [compaction]
 # Defaults for the "compact" op when the request leaves a limit at 0. A group of adjacent

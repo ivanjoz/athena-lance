@@ -16,14 +16,24 @@ type Config struct {
 	// Empty: the default credential chain (environment, ECS / EC2 / Lambda role).
 	Profile string
 
-	// Lambda function names (or ARNs). Both are required.
+	// Lambda function names (or ARNs). Both are required, unless Endpoint is set.
 	ControlFunction string // create_table, table_info, partitions, batch status
 	IngestFunction  string // writes, compaction, and query / explain
 
 	// Bucket is the S3 Express directory bucket of the service; write batches are uploaded
-	// under StagingPrefix (default "staging") before the service commits them. Required.
+	// under StagingPrefix (default "staging") before the service commits them. Required,
+	// unless Endpoint is set.
 	Bucket        string
 	StagingPrefix string
+
+	// Endpoint, for callers without IAM access to the functions (another AWS account, a
+	// developer machine): the ingest Function URL, e.g. "https://<id>.lambda-url.us-west-2.on.aws/".
+	// When set, every request goes to <Endpoint>v1/lance with APIKey instead of invoking
+	// Lambda, no AWS credentials are used, and the client is read-only: queries, table info
+	// and partition lists work; writes fail with ErrReadOnly or the service's READ_ONLY.
+	Endpoint string
+	// APIKey is the service's [api] read_key, sent as a Bearer token. Required with Endpoint.
+	APIKey string
 
 	// BatchRows is the number of rows per Arrow record batch in uploaded files. Default 65536.
 	BatchRows int
@@ -52,17 +62,25 @@ const (
 // withDefaults validates the required fields and fills the optional ones.
 func (c Config) withDefaults() (Config, error) {
 	var missing []error
-	for _, f := range []struct{ name, value string }{
+	required := []struct{ name, value string }{
 		{"ControlFunction", c.ControlFunction},
 		{"IngestFunction", c.IngestFunction},
 		{"Bucket", c.Bucket},
-	} {
+	}
+	if c.Endpoint != "" {
+		required = []struct{ name, value string }{{"APIKey", c.APIKey}}
+	}
+	for _, f := range required {
 		if f.value == "" {
 			missing = append(missing, errors.New("lancego: Config."+f.name+" is required"))
 		}
 	}
 	if err := errors.Join(missing...); err != nil {
 		return c, err
+	}
+	if c.Endpoint != "" {
+		// Every op goes to the one URL; as the "function" it names the target in errors.
+		c.ControlFunction, c.IngestFunction = c.Endpoint, c.Endpoint
 	}
 	if c.StagingPrefix == "" {
 		c.StagingPrefix = DefaultStagingPrefix

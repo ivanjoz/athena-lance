@@ -329,3 +329,24 @@ Plan and measurements: `docs/plan-archivo-por-particion.md`. **Not compiled or d
 - **Cleanup:** a bucket lifecycle rule expires the prefix after 1 day (`deploy/setup.sh`).
 - **Cost accepted:** a miss costs one GET (404) before running and one PUT after it (up to 5 MB).
 
+## ADR-014: Read-only HTTP API with an API key — 2026-10-22
+
+**Not compiled or deployed yet.**
+
+- **Problem:** the Go client invokes the functions with IAM, which only works from the account
+  that owns them. Smartberry's dev backend lives in another AWS account, and a developer machine
+  should not need prod credentials to read.
+- **API:** `POST /v1/lance` on the ingest Function URL (the one the Trino API already uses; auth
+  NONE). The body and response are the direct-Invoke request and envelope, so lancego only swaps
+  its transport (`Config.Endpoint` + `APIKey`). Auth: `Authorization: Bearer <[api] read_key>`,
+  compared hashed and in constant time; an empty key rejects everything.
+- **Read-only:** `Request::is_read_only` (query, explain, list_tables, describe_table, table_info,
+  list_partitions, get_batch); anything else answers `READ_ONLY`. lancego refuses uploads and async
+  requests (`ErrReadOnly`) before sending them.
+- **Key:** smartberry's `APR_TOKEN`, which its non-prod environments already use to call prod.
+- **Who writes:** only the prod Lambda invokes directly. Smartberry decides with
+  `IS_PROD && !IS_LOCAL`; dev and local (even with `-env prod`) read through the API and don't send
+  to Lance.
+- **Errors:** the API answers its own errors (bad key, bad body) as envelopes, so the client decodes
+  them like any service error.
+

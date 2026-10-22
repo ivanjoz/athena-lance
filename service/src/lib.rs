@@ -1,6 +1,7 @@
 //! Lance table service: schema-driven tables on S3 Express One Zone, driven by JSON requests
 //! from the Go client (lancego). See docs/decisions.md.
 
+pub mod api;
 pub mod app;
 pub mod config;
 pub mod error;

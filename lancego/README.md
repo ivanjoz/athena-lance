@@ -55,8 +55,9 @@ client, err := lancego.NewWithAWS(cfg, awsCfg)
 
 | Field | Required | Default / meaning |
 |---|---|---|
-| `ControlFunction`, `IngestFunction` | yes | Lambda names or ARNs: control ops go to the first; writes, compaction and queries to the second |
-| `Bucket` | yes | S3 Express bucket of the service (write batches are staged there) |
+| `ControlFunction`, `IngestFunction` | yes (not with `Endpoint`) | Lambda names or ARNs: control ops go to the first; writes, compaction and queries to the second |
+| `Bucket` | yes (not with `Endpoint`) | S3 Express bucket of the service (write batches are staged there) |
+| `Endpoint`, `APIKey` | no | read-only client without AWS credentials (see below) |
 | `Region`, `Profile` | no | used by `New` to load credentials; empty profile = default chain (role) |
 | `StagingPrefix` | no | `staging` |
 | `BatchRows` | no | 65536 rows per Arrow record batch in uploaded files |
@@ -67,6 +68,19 @@ client, err := lancego.NewWithAWS(cfg, awsCfg)
 `New` / `NewWithAWS` return an error naming every missing required field. The repo's
 `config.toml` is the service's and the deploy scripts' configuration; `examples/sales` reads it
 (as a backend would read its own) and builds the `Config` (`examples/sales/config.go`).
+
+**Read-only client (API key).** A caller that can't invoke the functions with IAM (another AWS
+account, a developer machine) sets `Endpoint` to the ingest Function URL and `APIKey` to the
+service's `[api] read_key`. Requests go to `POST <Endpoint>v1/lance` with `Authorization: Bearer`,
+no AWS credentials are loaded, and only read ops work: queries, `list_tables`, `table_info`,
+partition lists. Writes fail with `lancego.ErrReadOnly` (uploads) or the service's `READ_ONLY`.
+
+```go
+client, err := lancego.New(ctx, lancego.Config{
+	Endpoint: "https://<id>.lambda-url.us-west-2.on.aws/",
+	APIKey:   key, // from the application's own secrets
+})
+```
 
 ## Query
 

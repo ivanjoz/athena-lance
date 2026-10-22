@@ -14,8 +14,22 @@ use crate::ops::{compact, control, query, write};
 use crate::protocol::{Request, TableInfoReq};
 
 pub async fn handle(app: &App, request_id: &str, payload: Value) -> Value {
+    handle_with(app, request_id, payload, false).await
+}
+
+/// `handle` for the HTTP API (API key): ops that write are rejected with READ_ONLY.
+pub async fn handle_read_only(app: &App, request_id: &str, payload: Value) -> Value {
+    handle_with(app, request_id, payload, true).await
+}
+
+async fn handle_with(app: &App, request_id: &str, payload: Value, read_only: bool) -> Value {
     let started = Instant::now();
     let (op, table, result) = match serde_json::from_value::<Request>(payload) {
+        Ok(req) if read_only && !req.is_read_only() => {
+            let op = req.op();
+            let message = format!("{op} writes; the HTTP API is read-only (writes need the direct Invoke)");
+            (op, req.table().map(str::to_string), Err(Error::api(code::READ_ONLY, message)))
+        }
         Ok(req) => {
             let (op, table) = (req.op(), req.table().map(str::to_string));
             // Boxed: the op futures (Lance writes) are deep enough to overflow the

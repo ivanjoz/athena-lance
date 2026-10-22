@@ -41,6 +41,20 @@ impl Request {
         }
     }
 
+    /// Ops that change nothing: the only ones the HTTP API (API key) accepts.
+    pub fn is_read_only(&self) -> bool {
+        match self {
+            Request::DescribeTable(_)
+            | Request::TableInfo(_)
+            | Request::ListTables(_)
+            | Request::ListPartitions(_)
+            | Request::GetBatch(_)
+            | Request::Query(_)
+            | Request::Explain(_) => true,
+            Request::CreateTable(_) | Request::Ingest(_) | Request::ReplacePartitions(_) | Request::Compact(_) => false,
+        }
+    }
+
     pub fn table(&self) -> Option<&str> {
         match self {
             Request::CreateTable(r) => Some(&r.table),

@@ -16,6 +16,17 @@ pub struct Config {
     pub compaction: Compaction,
     pub query: QueryCfg,
     pub trino: TrinoCfg,
+    #[serde(default)]
+    pub api: ApiCfg,
+}
+
+/// The read-only JSON API on the ingest Function URL (`POST /v1/lance`), for clients that
+/// can't invoke the functions directly (another AWS account, a developer machine).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ApiCfg {
+    /// `Authorization: Bearer <read_key>`. Empty (or no [api] section) rejects every request.
+    #[serde(default)]
+    pub read_key: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -83,4 +83,8 @@ pub mod code {
     pub const QUERY_TIMEOUT: &str = "QUERY_TIMEOUT";
     pub const RESOURCES_EXHAUSTED: &str = "RESOURCES_EXHAUSTED";
     pub const VERSION_NOT_AVAILABLE: &str = "VERSION_NOT_AVAILABLE";
+    /// HTTP API: missing or wrong API key.
+    pub const UNAUTHORIZED: &str = "UNAUTHORIZED";
+    /// HTTP API: the op writes; it needs the direct Invoke (IAM).
+    pub const READ_ONLY: &str = "READ_ONLY";
 }

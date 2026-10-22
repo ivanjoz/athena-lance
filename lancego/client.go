@@ -71,8 +71,12 @@ func (a *awsTransport) putObject(ctx context.Context, bucket, key, contentType s
 }
 
 // New creates a client, loading AWS credentials for cfg.Region (and cfg.Profile, if set)
-// from the default credential chain.
+// from the default credential chain. With cfg.Endpoint it uses no AWS credentials: it is the
+// read-only client over the service's HTTP API.
 func New(ctx context.Context, cfg Config) (*Client, error) {
+	if cfg.Endpoint != "" {
+		return newClient(cfg, newHTTPTransport(cfg.Endpoint, cfg.APIKey))
+	}
 	var opts []func(*awsconfig.LoadOptions) error
 	if cfg.Profile != "" {
 		opts = append(opts, awsconfig.WithSharedConfigProfile(cfg.Profile))
@@ -88,8 +92,11 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 }
 
 // NewWithAWS creates a client from an AWS configuration the application already loaded
-// (cfg.Region and cfg.Profile are not used).
+// (cfg.Region and cfg.Profile are not used). With cfg.Endpoint, awsCfg is ignored, as in New.
 func NewWithAWS(cfg Config, awsCfg aws.Config) (*Client, error) {
+	if cfg.Endpoint != "" {
+		return newClient(cfg, newHTTPTransport(cfg.Endpoint, cfg.APIKey))
+	}
 	var tr transport = &awsTransport{
 		s3: s3.NewFromConfig(awsCfg),
 		// Writes run up to the function timeout (15 min) before answering.
