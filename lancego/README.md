@@ -81,6 +81,12 @@ table of the service can be named, including tables created after the function s
 - Freshness: the service caches each table and checks for a newer version every
   `query.freshness_seconds` (service setting). To read your own write, pass `MinVersions{table: res.Version()}`
   from `Save`: that table is refreshed first (or `VERSION_NOT_AVAILABLE`).
+- Result cache: the service keeps each result in the bucket and answers the same query (same SQL
+  and `MaxRows`) from it, without running it, while it is younger than `CacheSeconds`: 0 = the
+  service default (`query.cache_default_seconds`, 5 minutes), `lancego.CacheOff` (-1) = no cache,
+  > 0 = that age (cap `query.cache_max_seconds`). Writes do not invalidate it: a cached result
+  older than `MinVersions` is not used, so pass `MinVersions` (or `CacheOff`) to read your own
+  write. `res.Stats.CacheHit` / `CacheAgeMS` say where the result came from.
 - `res.Stats`: elapsed / plan / exec ms, bytes read and GET requests, cold start, and the version
   of each table read. `client.Explain(ctx, sql, opts)` runs it with `EXPLAIN ANALYZE` into
   `res.Plan` (index use, pruning, metrics).

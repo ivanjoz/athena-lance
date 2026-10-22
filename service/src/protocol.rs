@@ -164,4 +164,9 @@ pub struct Query {
     /// Per table, the oldest Lance version the query may read (e.g. the version Save confirmed).
     #[serde(default)]
     pub min_versions: std::collections::BTreeMap<String, u64>,
+    /// Max age of a cached result to answer with: 0 = config query.cache_default_seconds,
+    /// negative = no cache (neither read nor written); capped at query.cache_max_seconds.
+    /// Ignored by explain.
+    #[serde(default)]
+    pub cache_seconds: i64,
 }

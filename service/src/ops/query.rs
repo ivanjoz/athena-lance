@@ -5,6 +5,9 @@
 //! SessionContext, so a table created at runtime is queryable at once. A cached table is
 //! re-checked for a newer version after `query.freshness_seconds`, or right away when the
 //! request names a minimum version for it (the one `Save` confirmed).
+//!
+//! Results are cached in the bucket (`query_cache`): a request whose result is cached and young
+//! enough is answered without planning or running anything.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,9 +26,10 @@ use lance::Dataset;
 use lance::datafusion::LanceTableProvider;
 use lance_io::object_store::{ObjectStoreParams, WrappingObjectStore};
 use lance_io::utils::tracking_store::IOTracker;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::query_cache::Lookup;
 use crate::app::App;
 use crate::config::QueryCfg;
 use crate::error::{Error, Result, code};
@@ -104,7 +108,7 @@ impl QueryEngine {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct QueryResult {
     pub columns: Vec<Column>,
     /// Array of objects keyed by column name (nulls included).
@@ -118,7 +122,7 @@ pub struct QueryResult {
     pub plan: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Column {
     pub name: String,
     #[serde(rename = "type")]
@@ -126,16 +130,22 @@ pub struct Column {
     pub nullable: bool,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct QueryStats {
     pub elapsed_ms: f64,
-    /// Table resolution (opening / refreshing datasets) + SQL planning.
+    /// Table resolution (opening / refreshing datasets) + SQL planning. 0 on a cache hit.
     pub plan_ms: f64,
     pub exec_ms: f64,
     pub bytes_read: u64,
     pub get_requests: u64,
     pub cold_start: bool,
+    /// On a cache hit, the versions the cached result was computed at.
     pub dataset_versions: BTreeMap<String, u64>,
+    /// The result came from the cache, computed cache_age_ms ago.
+    #[serde(default)]
+    pub cache_hit: bool,
+    #[serde(default)]
+    pub cache_age_ms: u64,
 }
 
 pub async fn query(app: &App, req: Query, explain: bool) -> Result<QueryResult> {
@@ -154,6 +164,19 @@ pub async fn query(app: &App, req: Query, explain: bool) -> Result<QueryResult> 
 
     let started = Instant::now();
     let cold_start = !app.query.warm.swap(true, Ordering::Relaxed);
+    // EXPLAIN ANALYZE is for looking at a run, so it always runs.
+    let cache = if explain { None } else { Lookup::new(q, &req.sql, max_rows, req.cache_seconds) };
+    if let Some(cache) = &cache
+        && let Some(mut result) = cache.get(app, &req.sql, &req.min_versions).await
+    {
+        // bytes_read / get_requests count table reads, and there were none.
+        result.stats.bytes_read = 0;
+        result.stats.get_requests = 0;
+        result.stats.cold_start = cold_start;
+        result.stats.elapsed_ms = ms(started);
+        return Ok(result);
+    }
+
     // One invocation at a time per Lambda container: the counters belong to this query.
     app.query.io.incremental_stats();
     let mut result = tokio::time::timeout(Duration::from_millis(timeout_ms), run(app, &req, explain, max_rows, started))
@@ -163,6 +186,9 @@ pub async fn query(app: &App, req: Query, explain: bool) -> Result<QueryResult> 
     result.stats.bytes_read = io.read_bytes;
     result.stats.get_requests = io.read_iops;
     result.stats.cold_start = cold_start;
+    if let Some(cache) = &cache {
+        cache.put(app, &req.sql, &result).await;
+    }
     result.stats.elapsed_ms = ms(started);
     Ok(result)
 }

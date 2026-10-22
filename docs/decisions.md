@@ -308,3 +308,24 @@ Plan and measurements: `docs/plan-archivo-por-particion.md`. **Not compiled or d
 - **Cost accepted:** more, smaller files (1289 per weather table instead of 163): full-table scans do
   more GETs. The screens always read one ubicación.
 
+## ADR-013: Query result cache in the data bucket — 2026-10-22
+
+**Not compiled or deployed yet.**
+
+- **Where:** `s3://<bucket>/<query.cache_prefix>/query/<sha256>.json` in the S3 Express bucket, so
+  every container of lance-ingest shares it (an in-memory cache would be per container and lost on a
+  cold start). One object per key, overwritten when the query runs again.
+- **Key:** SHA-256 of a format version, the resolved max_rows, `query.max_response_bytes` and the SQL
+  text as sent (no normalization: different whitespace is a different entry). The SQL is stored in
+  the entry and compared on read.
+- **Freshness by age, chosen per request:** `cache_seconds` 0 = `query.cache_default_seconds` (300),
+  negative = off (not read, not written), > 0 = that age capped at `query.cache_max_seconds` (86400).
+  A write does not invalidate entries (that would need a per-table index of entries); a request with
+  `min_versions` skips an entry computed at an older version, so read-your-writes still holds.
+- **Scope:** the `query` op only. `explain` always runs (it is for looking at a run). The Trino API
+  does not use it.
+- **Never fails a query:** a read or write error is logged and the query runs as if there were no entry.
+  Errors and timeouts are not cached; truncated results are (the same request truncates the same way).
+- **Cleanup:** a bucket lifecycle rule expires the prefix after 1 day (`deploy/setup.sh`).
+- **Cost accepted:** a miss costs one GET (404) before running and one PUT after it (up to 5 MB).
+

@@ -118,8 +118,18 @@ type QueryOptions struct {
 	// MinVersions is, per table, the oldest Lance version the query may read. Pass the
 	// version a write confirmed (SaveResult.Version) to read your own writes: the service
 	// refreshes its cached copy of the table instead of waiting for query.freshness_seconds.
+	// A cached result computed at an older version is not used either.
 	MinVersions map[string]int64
+	// CacheSeconds is the max age of a cached result the query may be answered with:
+	// 0 = the service default (query.cache_default_seconds, 5 minutes), CacheOff = no cache
+	// (the result is neither read from nor written to it), > 0 = that age (capped at
+	// query.cache_max_seconds). A write does not invalidate cached results: to read your own
+	// write, pass MinVersions or CacheOff. Explain ignores it.
+	CacheSeconds int
 }
+
+// CacheOff, as QueryOptions.CacheSeconds, runs the query without the result cache.
+const CacheOff = -1
 
 // Query runs read-only SQL on lance-ingest. The service cuts it at TimeoutMS (default and cap:
 // query.default_timeout_ms / max_timeout_ms, 30 s), well before the function's own timeout.
@@ -135,7 +145,10 @@ func (c *Client) Explain(ctx context.Context, sql string, opts QueryOptions) (*Q
 
 func (c *Client) query(ctx context.Context, op, sql string, opts QueryOptions) (*QueryResult, error) {
 	var out QueryResult
-	req := queryRequest{Op: op, SQL: sql, Format: "json", MaxRows: opts.MaxRows, TimeoutMS: opts.TimeoutMS, MinVersions: opts.MinVersions}
+	req := queryRequest{
+		Op: op, SQL: sql, Format: "json", MaxRows: opts.MaxRows, TimeoutMS: opts.TimeoutMS,
+		MinVersions: opts.MinVersions, CacheSeconds: opts.CacheSeconds,
+	}
 	if err := c.invoke(ctx, c.cfg.IngestFunction, req, &out); err != nil {
 		return nil, err
 	}

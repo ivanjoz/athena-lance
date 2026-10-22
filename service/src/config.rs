@@ -72,6 +72,12 @@ pub struct QueryCfg {
     pub max_response_bytes: usize,
     pub freshness_seconds: u64,
     pub memory_fraction: f64,
+    /// Query result cache: s3://<bucket>/<cache_prefix>/query/<sha256>.json.
+    pub cache_prefix: String,
+    /// Max age of a cached result when the request sets cache_seconds = 0.
+    pub cache_default_seconds: u64,
+    /// Cap on the max age a request may ask for.
+    pub cache_max_seconds: u64,
 }
 
 /// The Trino-compatible HTTP API on the ingest Function URL (trino-api-plan.md).

@@ -91,6 +91,13 @@ max_response_bytes = 5000000
 freshness_seconds = 5
 # DataFusion memory pool as a fraction of the function memory (sorts/joins spill to /tmp beyond it).
 memory_fraction = 0.6
+# Result cache in the data bucket: s3://<bucket>/<cache_prefix>/query/<sha256>.json, one object per
+# (sql, max_rows). A query whose result is younger than its cache_seconds is answered from it
+# without running. cache_seconds: 0 = cache_default_seconds, -1 = no cache (neither read nor
+# written), > 0 = that age, capped at cache_max_seconds. setup.sh expires the prefix after 1 day.
+cache_prefix = "cache"
+cache_default_seconds = 300
+cache_max_seconds = 86400
 
 [trino]
 # Trino-compatible HTTP API on the ingest Function URL (trino-api-plan.md), for Tableau / DBeaver.

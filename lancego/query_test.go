@@ -69,6 +69,33 @@ func TestDecodeRowsAggregate(t *testing.T) {
 	}
 }
 
+// cache_seconds is left out at 0 (the service default, 5 minutes) and sent as -1 for CacheOff.
+func TestQueryRequestCacheSeconds(t *testing.T) {
+	for _, c := range []struct {
+		seconds int
+		want    string
+	}{
+		{0, `{"op":"query","sql":"SELECT 1","format":"json"}`},
+		{CacheOff, `{"op":"query","sql":"SELECT 1","format":"json","cache_seconds":-1}`},
+		{60, `{"op":"query","sql":"SELECT 1","format":"json","cache_seconds":60}`},
+	} {
+		b, err := json.Marshal(queryRequest{Op: "query", SQL: "SELECT 1", Format: "json", CacheSeconds: c.seconds})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(b) != c.want {
+			t.Fatalf("cache %d: got %s", c.seconds, b)
+		}
+	}
+	var res QueryResult
+	if err := json.Unmarshal([]byte(`{"stats":{"cache_hit":true,"cache_age_ms":1200}}`), &res); err != nil {
+		t.Fatal(err)
+	}
+	if !res.Stats.CacheHit || res.Stats.CacheAgeMS != 1200 {
+		t.Fatalf("stats: %+v", res.Stats)
+	}
+}
+
 func TestSaveResultVersion(t *testing.T) {
 	r := SaveResult{Batches: []BatchStatus{{DataVersion: 4, Version: 5}, {DataVersion: 7}}}
 	if v := r.Version(); v != 7 {

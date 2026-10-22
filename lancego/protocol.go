@@ -243,12 +243,13 @@ type TableInfo struct {
 }
 
 type queryRequest struct {
-	Op          string           `json:"op"` // "query" | "explain"
-	SQL         string           `json:"sql"`
-	Format      string           `json:"format"` // "json"
-	MaxRows     int              `json:"max_rows,omitempty"`
-	TimeoutMS   int              `json:"timeout_ms,omitempty"`
-	MinVersions map[string]int64 `json:"min_versions,omitempty"`
+	Op           string           `json:"op"` // "query" | "explain"
+	SQL          string           `json:"sql"`
+	Format       string           `json:"format"` // "json"
+	MaxRows      int              `json:"max_rows,omitempty"`
+	TimeoutMS    int              `json:"timeout_ms,omitempty"`
+	MinVersions  map[string]int64 `json:"min_versions,omitempty"`
+	CacheSeconds int              `json:"cache_seconds,omitempty"`
 }
 
 // envelope is the common response wrapper.
@@ -286,6 +287,10 @@ type QueryStats struct {
 	GetRequests     int64            `json:"get_requests"`
 	ColdStart       bool             `json:"cold_start"`
 	DatasetVersions map[string]int64 `json:"dataset_versions"`
+	// CacheHit: the result came from the service's result cache, computed CacheAgeMS ago
+	// (DatasetVersions are the versions it was computed at).
+	CacheHit   bool  `json:"cache_hit"`
+	CacheAgeMS int64 `json:"cache_age_ms"`
 }
 
 // QueryResult is the query response. Rows is a JSON array of objects keyed by column name,
