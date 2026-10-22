@@ -1,0 +1,4 @@
+target/
+*.zip
+# stale lockfile from before the workspace (the root Cargo.lock is the one used)
+spikes/spike-a/Cargo.lock

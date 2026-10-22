@@ -1,0 +1,46 @@
+[package]
+name = "lance-service"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "lance_service"
+path = "src/lib.rs"
+
+# The Lambda entry point (cargo lambda names the zip binary "bootstrap").
+[[bin]]
+name = "bootstrap"
+path = "src/main.rs"
+
+# Runs one request locally against the real bucket and ledger: lance-cli '<json>'.
+[[bin]]
+name = "lance-cli"
+path = "src/bin/cli.rs"
+
+[dependencies]
+lance.workspace = true
+lance-file.workspace = true
+lance-index.workspace = true
+lance-table.workspace = true
+lance-io.workspace = true
+arrow.workspace = true
+arrow-array.workspace = true
+arrow-schema.workspace = true
+object_store.workspace = true
+anyhow = "1"
+async-trait = "0.1"
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-dynamodb = "1"
+base64 = "0.22"
+bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+futures = "0.3"
+lambda_runtime = "1.5"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+toml = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+uuid = { version = "1", features = ["v4"] }

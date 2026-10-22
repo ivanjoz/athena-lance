@@ -1,0 +1,20 @@
+[package]
+name = "spike-a"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+arrow.workspace = true
+arrow-array.workspace = true
+arrow-schema.workspace = true
+async-trait = "0.1.92"
+futures = "0.3.34"
+lance.workspace = true
+lance-file.workspace = true
+lance-index.workspace = true
+lance-table.workspace = true
+object_store.workspace = true
+serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.54.1", features = ["full"] }
+toml = "1.1.8"
