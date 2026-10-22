@@ -2,9 +2,12 @@ package lancego
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"reflect"
+	"strings"
 	"time"
 )
 
@@ -122,6 +125,78 @@ func (t *Table[T]) DeletePartitions(ctx context.Context, partitions ...[]any) (*
 		batch = append(batch, pendingPartition[T]{write: partitionWrite{Key: key, Values: typed}})
 	}
 	return t.sendPartitions(ctx, batch, true)
+}
+
+// DeletePartitions removes whole partitions of a table without a typed Table, for callers
+// that only know the partition values as text (e.g. "2", "2612" for filial_id=2/semana=2612,
+// in PartitionKeys order and formatted like fmt.Sprint).
+//
+// The typed values and the key are taken from the partition registry, so they are exactly
+// the ones Save wrote. A partition the registry does not list is not in the table and is
+// skipped. Returns the number of partitions deleted and, if any, the batch status of the
+// single atomic commit that removed them.
+func (c *Client) DeletePartitions(ctx context.Context, table string, partitions ...[]string) (int, *BatchStatus, error) {
+	if len(partitions) == 0 {
+		return 0, nil, nil
+	}
+	var out struct {
+		Partitions []struct {
+			Key    string            `json:"key"`
+			Values []json.RawMessage `json:"values"`
+		} `json:"partitions"`
+	}
+	if err := c.invoke(ctx, c.cfg.ControlFunction, tableRequest{Op: "list_partitions", Table: table}, &out); err != nil {
+		return 0, nil, fmt.Errorf("lancego: reading partition registry: %w", err)
+	}
+	byValues := make(map[string]partitionWrite, len(out.Partitions))
+	for _, p := range out.Partitions {
+		values, err := keyValues(p.Key)
+		if err != nil {
+			return 0, nil, err
+		}
+		typed := make([]any, len(p.Values))
+		for i, v := range p.Values {
+			typed[i] = v
+		}
+		byValues[strings.Join(values, "\x00")] = partitionWrite{Key: p.Key, Values: typed}
+	}
+
+	req := replacePartitionsRequest{Op: "replace_partitions", Table: table, BatchID: newBatchID()}
+	seen := map[string]bool{}
+	for _, values := range partitions {
+		id := strings.Join(values, "\x00")
+		if p, ok := byValues[id]; ok && !seen[id] {
+			seen[id] = true
+			req.Partitions = append(req.Partitions, p)
+		}
+	}
+	if len(req.Partitions) == 0 {
+		return 0, nil, nil
+	}
+
+	var st BatchStatus
+	if err := c.write(ctx, req, &st, false); err != nil {
+		return 0, nil, fmt.Errorf("lancego: deleting %d partitions of %s (batch %s): %w", len(req.Partitions), table, req.BatchID, err)
+	}
+	return len(req.Partitions), &st, nil
+}
+
+// keyValues splits a partition key ("filial_id=2/semana=2612") into its unescaped values.
+func keyValues(key string) ([]string, error) {
+	parts := strings.Split(key, "/")
+	values := make([]string, len(parts))
+	for i, part := range parts {
+		_, raw, ok := strings.Cut(part, "=")
+		if !ok {
+			return nil, fmt.Errorf("lancego: malformed partition key %q", key)
+		}
+		v, err := url.PathUnescape(raw)
+		if err != nil {
+			return nil, fmt.Errorf("lancego: malformed partition key %q: %w", key, err)
+		}
+		values[i] = v
+	}
+	return values, nil
 }
 
 // Partitions returns the registry: every partition with its hash, partition ID, row count,

@@ -298,6 +298,34 @@ func TestDeletePartitionsUsesSaveKeys(t *testing.T) {
 	}
 }
 
+// Client.DeletePartitions takes the values as text and finds the typed ones in the registry;
+// partitions the registry doesn't list are already gone and are skipped.
+func TestClientDeletePartitionsByText(t *testing.T) {
+	tbl, fake := testTable(t)
+	ctx := context.Background()
+	if _, err := tbl.Save(ctx, ventas(), SaveOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, st, err := tbl.c.DeletePartitions(ctx, "ventas",
+		[]string{"1", "2026-10-01"}, []string{"1", "2026-10-01"}, []string{"9", "2026-10-01"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || st == nil || st.Status != BatchCommitted || len(fake.registry) != 5 {
+		t.Fatalf("deleted %d, status %+v, registry %d", n, st, len(fake.registry))
+	}
+	p := fake.requests[len(fake.requests)-1].Partitions[0]
+	if p.Key != "filial_id=1/fecha=2026-10-01" || p.Rows != 0 || p.Values[0] != float64(1) {
+		t.Fatalf("delete request = %+v", p)
+	}
+
+	n, st, err = tbl.c.DeletePartitions(ctx, "ventas", []string{"9", "2026-10-01"})
+	if err != nil || n != 0 || st != nil {
+		t.Fatalf("unknown partition: %d %+v %v", n, st, err)
+	}
+}
+
 func TestSaveReportsFailedBatch(t *testing.T) {
 	tbl, fake := testTable(t)
 	fake.failNext = true
