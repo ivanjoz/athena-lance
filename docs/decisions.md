@@ -207,3 +207,45 @@ skipped, and the ledger records hash + `parquet_id` + `records_updated` per part
     - Save of 3 partitions: 3.4 s client side; the commit invocation takes 0.8–1.1 s and 114 MB.
     - compact: 3 fragments became 1.
   - The bucket policy for `s3express:CreateSession` was enough; no IAM change was needed.
+
+## ADR-009: Query (`query` / `explain` ops, `smartberry-lance-query`) — 2026-10-22
+
+- **Function:** `smartberry-lance-query` (3008 MB, 30 s), same zip and binary as the other two,
+  deployed by `deploy/deploy.sh`. Limits and defaults live in `[query]` in config.toml.
+- **Dynamic catalog without a SchemaProvider:** each request parses the SQL, takes the table names
+  it references (`resolve_table_references`, CTEs excluded) and registers each table in a fresh
+  `SessionContext` as a `LanceTableProvider` (unordered scans). Datasets are cached per process
+  (shared Lance session: index and metadata caches stay warm), so a table created at runtime is
+  queryable with no redeploy, and the response can report the exact version read per table.
+  Only bare names (or `public.<name>`) matching the table-name rule are accepted, so SQL can never
+  name a path, another catalog or `information_schema`.
+- **Freshness:** a cached table is checked (`latest_version_id`) at most every
+  `query.freshness_seconds`; when it moved, `checkout_latest`. `min_versions: {table: v}` forces the
+  check, giving read-your-writes with the version `Save` confirmed (`SaveResult.Version()`), or
+  `VERSION_NOT_AVAILABLE`.
+- **Read-only:** `SQLOptions` without DDL, DML or statements (`SET`), so only queries plan.
+  Errors in the SQL → `SQL_ERROR`; memory pool exhausted → `RESOURCES_EXHAUSTED`; timeout →
+  `QUERY_TIMEOUT`.
+- **Limits:** `max_rows` is pushed as `LIMIT max_rows+1` (the extra row only detects truncation)
+  and rows stop being added once the JSON reaches `query.max_response_bytes` (sync Lambda responses
+  are capped at 6 MB); both set `truncated`. The DataFusion memory pool is `memory_fraction` of
+  `AWS_LAMBDA_FUNCTION_MEMORY_SIZE`; sorts and joins spill to /tmp beyond it.
+- **Response:** `columns` (name, Arrow type, nullable), `rows` (arrow-json with explicit nulls;
+  timestamps RFC 3339 with the zone, binary as hex), `row_count`, `truncated`, `stats`
+  (elapsed / plan / exec ms, `bytes_read` and `get_requests` from a Lance `IOTracker` wrapped
+  around the query datasets' object store, `cold_start`, `dataset_versions`). `explain` runs
+  `EXPLAIN ANALYZE` and returns the text in `plan`.
+- **Go:** `Client.Query`, `Client.Explain(ctx, sql, opts)`, `Table[T].Query` → `[]T`, and
+  `DecodeRows[R]` for any lance-tagged struct (aggregates).
+- **Verified locally** (unit tests on a local Lance table with a BTREE index): JSON rows and
+  aggregates, truncation by rows and by bytes, DDL/DML/SET and qualified names rejected, and
+  EXPLAIN ANALYZE of `WHERE id = 42` showing `ScalarIndexQuery ... @id_btree(BTree)` under the
+  `LanceRead` (the filter is answered by the index: 1 row scanned).
+- **Verified with `lance-cli` against S3 Express** (table `ventas`, version 30, from a workstation,
+  so every GET includes the internet round trip, ~175 ms):
+  - group by region: 4 rows, 6 GETs, ~100 KB read; cold 2.8 s (1.8 s opening the dataset).
+  - `WHERE id = 42` warm: `ScalarIndexQuery @id_btree`, 1 GET, ~180 ms.
+  - `max_rows: 3` → 3 rows, `truncated`; `DELETE` → `SQL_ERROR`; unknown table → `TABLE_NOT_FOUND`.
+  - Go `examples/sales -query -explain` through `LANCEGO_CLI`: aggregate decoded with `DecodeRows`,
+    `SELECT *` decoded into `[]Venta` (nullable float, UTC timestamps), plan printed.
+- **Not yet deployed:** `smartberry-lance-query` does not exist yet; Lambda latency is unmeasured.

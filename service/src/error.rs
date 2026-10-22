@@ -79,4 +79,8 @@ pub mod code {
     pub const TABLE_BUSY: &str = "TABLE_BUSY";
     pub const BATCH_NOT_FOUND: &str = "BATCH_NOT_FOUND";
     pub const LOCK_LOST: &str = "LOCK_LOST";
+    pub const SQL_ERROR: &str = "SQL_ERROR";
+    pub const QUERY_TIMEOUT: &str = "QUERY_TIMEOUT";
+    pub const RESOURCES_EXHAUSTED: &str = "RESOURCES_EXHAUSTED";
+    pub const VERSION_NOT_AVAILABLE: &str = "VERSION_NOT_AVAILABLE";
 }

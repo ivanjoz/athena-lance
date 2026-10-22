@@ -110,10 +110,14 @@ func newClient(cfg Config, tr transport) *Client {
 	return &Client{cfg: cfg, tr: tr}
 }
 
-// QueryOptions tune a query. Zero values use the service defaults.
+// QueryOptions tune a query. Zero values use the service defaults (config [query]).
 type QueryOptions struct {
 	MaxRows   int
 	TimeoutMS int
+	// MinVersions is, per table, the oldest Lance version the query may read. Pass the
+	// version a write confirmed (SaveResult.Version) to read your own writes: the service
+	// refreshes its cached copy of the table instead of waiting for query.freshness_seconds.
+	MinVersions map[string]int64
 }
 
 // Query runs read-only SQL on lance-query.
@@ -121,14 +125,15 @@ func (c *Client) Query(ctx context.Context, sql string, opts QueryOptions) (*Que
 	return c.query(ctx, "query", sql, opts)
 }
 
-// Explain returns the EXPLAIN ANALYZE plan for sql (to check scalar index use).
-func (c *Client) Explain(ctx context.Context, sql string) (*QueryResult, error) {
-	return c.query(ctx, "explain", sql, QueryOptions{})
+// Explain runs sql with EXPLAIN ANALYZE and returns the plan in Plan (to check scalar
+// index use and pruning); Rows is empty.
+func (c *Client) Explain(ctx context.Context, sql string, opts QueryOptions) (*QueryResult, error) {
+	return c.query(ctx, "explain", sql, opts)
 }
 
 func (c *Client) query(ctx context.Context, op, sql string, opts QueryOptions) (*QueryResult, error) {
 	var out QueryResult
-	req := queryRequest{Op: op, SQL: sql, Format: "json", MaxRows: opts.MaxRows, TimeoutMS: opts.TimeoutMS}
+	req := queryRequest{Op: op, SQL: sql, Format: "json", MaxRows: opts.MaxRows, TimeoutMS: opts.TimeoutMS, MinVersions: opts.MinVersions}
 	if err := c.invoke(ctx, c.cfg.Lambda.QueryFunction, req, &out); err != nil {
 		return nil, err
 	}

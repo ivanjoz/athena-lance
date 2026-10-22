@@ -19,6 +19,9 @@ pub enum Request {
     Ingest(Ingest),
     ReplacePartitions(ReplacePartitions),
     Compact(Compact),
+    // lance-query (read-only)
+    Query(Query),
+    Explain(Query),
 }
 
 impl Request {
@@ -33,6 +36,8 @@ impl Request {
             Request::Ingest(_) => "ingest",
             Request::ReplacePartitions(_) => "replace_partitions",
             Request::Compact(_) => "compact",
+            Request::Query(_) => "query",
+            Request::Explain(_) => "explain",
         }
     }
 
@@ -45,7 +50,7 @@ impl Request {
             Request::Ingest(r) => Some(&r.table),
             Request::ReplacePartitions(r) => Some(&r.table),
             Request::Compact(r) => Some(&r.table),
-            Request::ListTables(_) => None,
+            Request::ListTables(_) | Request::Query(_) | Request::Explain(_) => None,
         }
     }
 }
@@ -138,4 +143,21 @@ pub struct Compact {
     pub max_files: usize,
     #[serde(default)]
     pub max_tasks: usize,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Query {
+    pub sql: String,
+    /// Only "json" (rows as an array of objects keyed by column name).
+    #[serde(default)]
+    pub format: String,
+    /// 0 = config query.default_max_rows; capped at query.max_rows_limit.
+    #[serde(default)]
+    pub max_rows: usize,
+    /// 0 = config query.default_timeout_ms; capped at query.max_timeout_ms.
+    #[serde(default)]
+    pub timeout_ms: u64,
+    /// Per table, the oldest Lance version the query may read (e.g. the version Save confirmed).
+    #[serde(default)]
+    pub min_versions: std::collections::BTreeMap<String, u64>,
 }

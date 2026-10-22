@@ -242,11 +242,12 @@ type TableInfo struct {
 }
 
 type queryRequest struct {
-	Op        string `json:"op"` // "query" | "explain"
-	SQL       string `json:"sql"`
-	Format    string `json:"format"` // "json"
-	MaxRows   int    `json:"max_rows,omitempty"`
-	TimeoutMS int    `json:"timeout_ms,omitempty"`
+	Op          string           `json:"op"` // "query" | "explain"
+	SQL         string           `json:"sql"`
+	Format      string           `json:"format"` // "json"
+	MaxRows     int              `json:"max_rows,omitempty"`
+	TimeoutMS   int              `json:"timeout_ms,omitempty"`
+	MinVersions map[string]int64 `json:"min_versions,omitempty"`
 }
 
 // envelope is the common response wrapper.
@@ -286,10 +287,19 @@ type QueryStats struct {
 	DatasetVersions map[string]int64 `json:"dataset_versions"`
 }
 
-// QueryResult is the query response. Rows is a JSON array of objects keyed by column name.
+// QueryResult is the query response. Rows is a JSON array of objects keyed by column name,
+// with every column present (null included); decode it with DecodeRows or Table.Query.
 type QueryResult struct {
-	Rows      json.RawMessage `json:"rows"`
-	Truncated bool            `json:"truncated"`
-	Stats     QueryStats      `json:"stats"`
-	Plan      string          `json:"plan,omitempty"` // explain only
+	Columns []struct {
+		Name     string `json:"name"`
+		Type     string `json:"type"` // Arrow type, e.g. "Int64", "Utf8", "Timestamp(µs, \"UTC\")"
+		Nullable bool   `json:"nullable"`
+	} `json:"columns"`
+	Rows     json.RawMessage `json:"rows"`
+	RowCount int             `json:"row_count"`
+	// Truncated: the query had more rows than MaxRows, or they did not fit in the response
+	// size limit (config query.max_response_bytes). Add a LIMIT or aggregate more.
+	Truncated bool       `json:"truncated"`
+	Stats     QueryStats `json:"stats"`
+	Plan      string     `json:"plan,omitempty"` // explain only
 }

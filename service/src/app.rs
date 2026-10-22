@@ -1,5 +1,6 @@
 //! Process-wide state, built once per Lambda container (init phase) and reused by every
-//! warm invocation: config, ledger client, bucket store and the Lance session (caches).
+//! warm invocation: config, ledger client, bucket store, the Lance session (caches) and the
+//! query engine (dataset cache, DataFusion runtime).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,6 +9,7 @@ use anyhow::Context;
 use lance::Dataset;
 use lance::dataset::builder::DatasetBuilder;
 use lance::session::Session;
+use lance_io::object_store::ObjectStoreParams;
 use object_store::{ObjectStore, ObjectStoreExt};
 use object_store::path::Path;
 
@@ -15,6 +17,7 @@ use crate::config::Config;
 use crate::error::{Error, Result, code};
 use crate::ledger::Ledger;
 use crate::lock::{LockSettings, TableLock};
+use crate::ops::query::QueryEngine;
 use crate::spec::{SPEC_CONFIG_KEY, TableSpec, validate_table_name};
 
 pub struct App {
@@ -23,6 +26,7 @@ pub struct App {
     /// Object store rooted at the data bucket (paths are bucket-relative).
     pub store: Arc<dyn ObjectStore>,
     pub session: Arc<Session>,
+    pub query: QueryEngine,
 }
 
 impl App {
@@ -31,13 +35,23 @@ impl App {
         let (store, _) = lance_io::object_store::ObjectStore::from_uri(&format!("s3://{}", cfg.storage.bucket))
             .await
             .context("opening the data bucket")?;
-        Ok(App { cfg, ledger, store: store.inner.clone(), session: Arc::new(Session::default()) })
+        let query = QueryEngine::new(&cfg.query)?;
+        Ok(App { cfg, ledger, store: store.inner.clone(), session: Arc::new(Session::default()), query })
     }
 
     pub async fn open(&self, table: &str) -> Result<Dataset> {
+        self.open_with(table, None).await
+    }
+
+    /// Opens a table with custom store params (the query engine adds its I/O counter).
+    pub async fn open_with(&self, table: &str, store_params: Option<ObjectStoreParams>) -> Result<Dataset> {
         validate_table_name(table)?;
         let uri = self.cfg.table_uri(table);
-        match DatasetBuilder::from_uri(&uri).with_session(self.session.clone()).load().await {
+        let mut builder = DatasetBuilder::from_uri(&uri).with_session(self.session.clone());
+        if let Some(params) = store_params {
+            builder = builder.with_store_params(params);
+        }
+        match builder.load().await {
             Ok(ds) => Ok(ds),
             Err(lance::Error::DatasetNotFound { .. }) => {
                 Err(Error::api(code::TABLE_NOT_FOUND, format!("table {table:?} does not exist")))

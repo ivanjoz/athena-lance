@@ -30,6 +30,16 @@ type SaveResult struct {
 	Batches   []BatchStatus // one per request; committed unless NoWait
 }
 
+// Version is the table version after the last batch, for QueryOptions.MinVersions
+// (0 when nothing was committed, e.g. with NoWait or no changes).
+func (r *SaveResult) Version() int64 {
+	var v int64
+	for _, b := range r.Batches {
+		v = max(v, b.Version, b.DataVersion)
+	}
+	return v
+}
+
 // Save writes rows partition by partition, like SaveRecordsToParquet in the smartberry
 // datalake: rows are grouped by PartitionKeys, each partition gets a hash, partitions whose
 // hash matches the registry are skipped, and the rest REPLACE their previous data. Each

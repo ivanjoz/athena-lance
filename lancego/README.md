@@ -34,8 +34,29 @@ ventas.Create(ctx, lancego.CreateOptions{IfNotExists: true})
 res, _ := ventas.Save(ctx, rows, lancego.SaveOptions{})  // returns once the data is committed
 parts, _ := ventas.Partitions(ctx)                       // key, hash, id, rows, committed_at, version
 ventas.DeletePartitions(ctx, []any{1, "2026-10-01"})
-client.Query(ctx, "SELECT region, sum(amount) FROM ventas GROUP BY region", lancego.QueryOptions{})
+found, _, _ := ventas.Query(ctx, "SELECT * FROM ventas WHERE customer_id = 'C00007'",
+	lancego.QueryOptions{MinVersions: map[string]int64{"ventas": res.Version()}}) // []Venta
 ```
+
+## Query
+
+`client.Query(ctx, sql, opts)` runs read-only SQL (DataFusion) on `lambda.query_function`; any
+table of the service can be named, including tables created after the function started.
+
+- `Table[T].Query` decodes the rows into `[]T` by lance column name; `DecodeRows[R](res)` does the
+  same for any struct with lance tags (aggregates: ``Total float64 `lance:"total"` ``).
+  `res.Rows` is the raw JSON array (nulls explicit, timestamps RFC 3339, binary as hex).
+- `MaxRows` (default `query.default_max_rows`, cap `query.max_rows_limit`) and the response size
+  limit (`query.max_response_bytes`) cut the result; `res.Truncated` says so.
+- Freshness: the service caches each table and checks for a newer version every
+  `query.freshness_seconds`. To read your own write, pass `MinVersions{table: res.Version()}`
+  from `Save`: that table is refreshed first (or `VERSION_NOT_AVAILABLE`).
+- `res.Stats`: elapsed / plan / exec ms, bytes read and GET requests, cold start, and the version
+  of each table read. `client.Explain(ctx, sql, opts)` runs it with `EXPLAIN ANALYZE` into
+  `res.Plan` (index use, pruning, metrics).
+- Errors: `SQL_ERROR` (syntax, unknown table/column, DDL/DML/SET, schema-qualified names),
+  `QUERY_TIMEOUT` (`TimeoutMS`, default `query.default_timeout_ms`), `RESOURCES_EXHAUSTED`
+  (DataFusion memory pool = `query.memory_fraction` of the function memory), `TABLE_NOT_FOUND`.
 
 ## Save: partitions, hashes and confirmation
 
@@ -132,6 +153,7 @@ Maps, interfaces, channels, funcs and complex numbers are rejected.
   contract (`save_test.go`): unchanged partitions skipped, replace not append, batch splitting,
   failed batches, deletes.
 - Against the real service: see the end-to-end status in `docs/decisions.md` (ADR-008).
-  `Query` / `Explain` need `lance-query`, which is not built yet.
+- `DecodeRows` / `Table.Query`: tested against the service's JSON rendering (`query_test.go`).
+  `Query` / `Explain` need the `smartberry-lance-query` function (`deploy/deploy.sh`).
 
 Example: `go run ./examples/sales` (stage only) or `go run ./examples/sales -create -save`.

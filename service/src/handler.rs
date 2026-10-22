@@ -1,6 +1,6 @@
 //! Request dispatch and the response envelope `{request_id, ok, result | error}`.
-//! The same binary backs both functions (lance-control and lance-ingest); the Go client
-//! sends control ops to one and writes to the other, which only differ in timeout/memory.
+//! The same binary backs every function (lance-control, lance-ingest, lance-query); the Go
+//! client sends control ops, writes and queries to each, which only differ in timeout/memory.
 
 use std::time::Instant;
 
@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use crate::app::App;
 use crate::error::{Error, Result, code};
-use crate::ops::{compact, control, write};
+use crate::ops::{compact, control, query, write};
 use crate::protocol::{Request, TableInfoReq};
 
 pub async fn handle(app: &App, request_id: &str, payload: Value) -> Value {
@@ -55,5 +55,7 @@ async fn dispatch(app: &App, req: Request) -> Result<Value> {
         Request::Ingest(r) => to_value(write::ingest(app, r).await?),
         Request::ReplacePartitions(r) => to_value(write::replace_partitions(app, r).await?),
         Request::Compact(r) => to_value(compact::compact(app, r).await?),
+        Request::Query(r) => to_value(query::query(app, r, false).await?),
+        Request::Explain(r) => to_value(query::query(app, r, true).await?),
     }
 }

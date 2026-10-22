@@ -14,6 +14,7 @@ pub struct Config {
     pub ledger: Ledger,
     pub service: ServiceCfg,
     pub compaction: Compaction,
+    pub query: QueryCfg,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -59,6 +60,17 @@ pub struct Compaction {
     pub max_file_mb: u64,
     pub max_files: usize,
     pub max_tasks: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct QueryCfg {
+    pub default_max_rows: usize,
+    pub max_rows_limit: usize,
+    pub default_timeout_ms: u64,
+    pub max_timeout_ms: u64,
+    pub max_response_bytes: usize,
+    pub freshness_seconds: u64,
+    pub memory_fraction: f64,
 }
 
 impl Config {

@@ -5,6 +5,7 @@
 //	go run ./examples/sales -save -change 7    # only the partition of row 7 is sent again
 //	go run ./examples/sales -delete 1/2026-10-01 -partitions
 //	go run ./examples/sales -compact -info -detail
+//	go run ./examples/sales -query -explain    # SQL on lance-query, typed rows, EXPLAIN ANALYZE
 package main
 
 import (
@@ -52,6 +53,8 @@ func main() {
 	partitions := flag.Bool("partitions", false, "print the partition registry")
 	info := flag.Bool("info", false, "print table_info")
 	detail := flag.Bool("detail", false, "table_info with per-file stats")
+	query := flag.Bool("query", false, "run example queries on lance-query")
+	explain := flag.Bool("explain", false, "print EXPLAIN ANALYZE of an indexed lookup")
 	n := flag.Int("rows", 1000, "rows to generate")
 	flag.Parse()
 	ctx := context.Background()
@@ -104,6 +107,8 @@ func main() {
 		rows[*change].Amount += 1
 	}
 
+	// Queries after a Save in this run ask for at least the version it committed.
+	minVersions := map[string]int64{}
 	if *save {
 		start := time.Now()
 		res, err := ventas.Save(ctx, rows, lancego.SaveOptions{})
@@ -111,6 +116,9 @@ func main() {
 			log.Fatal(err)
 		}
 		show(fmt.Sprintf("save (%s)", time.Since(start).Round(time.Millisecond)), res)
+		if v := res.Version(); v > 0 {
+			minVersions[ventas.Name()] = v
+		}
 	}
 	if *del != "" {
 		var filial int16
@@ -146,7 +154,43 @@ func main() {
 		show("table_info", ti)
 	}
 
-	if !*create && !*save && *del == "" && !*compact && !*partitions && !*info {
+	if *query {
+		opts := lancego.QueryOptions{MinVersions: minVersions}
+		type regionTotal struct {
+			Region string  `lance:"region"`
+			N      int64   `lance:"n"`
+			Total  float64 `lance:"total"`
+		}
+		start := time.Now()
+		res, err := client.Query(ctx, `SELECT region, count(*) AS n, sum(amount) AS total
+			FROM ventas WHERE fecha = '2026-10-01' GROUP BY region ORDER BY region`, opts)
+		if err != nil {
+			log.Fatal(err)
+		}
+		totals, err := lancego.DecodeRows[regionTotal](res)
+		if err != nil {
+			log.Fatal(err)
+		}
+		show(fmt.Sprintf("totals by region (%s)", time.Since(start).Round(time.Millisecond)), totals)
+		show("stats", res.Stats)
+
+		start = time.Now()
+		found, res, err := ventas.Query(ctx, "SELECT * FROM ventas WHERE customer_id = 'C00007' ORDER BY id", opts)
+		if err != nil {
+			log.Fatal(err)
+		}
+		show(fmt.Sprintf("rows of customer C00007 (%s)", time.Since(start).Round(time.Millisecond)), found)
+		show("stats", res.Stats)
+	}
+	if *explain {
+		res, err := client.Explain(ctx, "SELECT id, amount FROM ventas WHERE id = 42", lancego.QueryOptions{MinVersions: minVersions})
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("explain:\n%s\n", res.Plan)
+	}
+
+	if !*create && !*save && *del == "" && !*compact && !*partitions && !*info && !*query && !*explain {
 		staged, err := ventas.Stage(ctx, rows, lancego.InsertOptions{})
 		if err != nil {
 			log.Fatal(err)
