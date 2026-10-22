@@ -1,9 +1,9 @@
 // Package lancego converts Go structs to Apache Arrow and sends them to the Lance
-// service (lance-control / lance-ingest / lance-query on AWS Lambda).
+// service (lance-control / lance-ingest on AWS Lambda).
 //
 //	c, _ := lancego.New(ctx, lancego.Config{ // filled from the application's own configuration
 //		Region: "us-west-2", Bucket: "...--x-s3",
-//		ControlFunction: "...", IngestFunction: "...", QueryFunction: "...",
+//		ControlFunction: "...", IngestFunction: "...",
 //	})
 //	sales, _ := lancego.NewTable[Sale](c, lancego.TableDef{Name: "sales", PartitionKeys: []string{"fecha"}})
 //	sales.Create(ctx, lancego.CreateOptions{IfNotExists: true})
@@ -121,7 +121,8 @@ type QueryOptions struct {
 	MinVersions map[string]int64
 }
 
-// Query runs read-only SQL on lance-query.
+// Query runs read-only SQL on lance-ingest. The service cuts it at TimeoutMS (default and cap:
+// query.default_timeout_ms / max_timeout_ms, 30 s), well before the function's own timeout.
 func (c *Client) Query(ctx context.Context, sql string, opts QueryOptions) (*QueryResult, error) {
 	return c.query(ctx, "query", sql, opts)
 }
@@ -135,7 +136,7 @@ func (c *Client) Explain(ctx context.Context, sql string, opts QueryOptions) (*Q
 func (c *Client) query(ctx context.Context, op, sql string, opts QueryOptions) (*QueryResult, error) {
 	var out QueryResult
 	req := queryRequest{Op: op, SQL: sql, Format: "json", MaxRows: opts.MaxRows, TimeoutMS: opts.TimeoutMS, MinVersions: opts.MinVersions}
-	if err := c.invoke(ctx, c.cfg.QueryFunction, req, &out); err != nil {
+	if err := c.invoke(ctx, c.cfg.IngestFunction, req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

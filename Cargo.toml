@@ -4,11 +4,13 @@ members = ["service", "spikes/spike-a"]
 
 [workspace.dependencies]
 # Pinned together: lance 13.0.0 requires datafusion 54, arrow 58, object_store 0.14 (ADR-003).
-lance = "=13.0.0"
+# Only S3 is used: the default features pull in Azure, GCS, OSS, HuggingFace, Tencent,
+# TOS, GooseFS and geo, which add tens of MB to the Lambda binary (250 MB limit).
+lance = { version = "=13.0.0", default-features = false, features = ["aws"] }
 lance-file = "=13.0.0"
 lance-index = "=13.0.0"
 lance-table = "=13.0.0"
-lance-io = "=13.0.0"
+lance-io = { version = "=13.0.0", default-features = false, features = ["aws"] }
 arrow = { version = "58", features = ["ipc_compression"] }
 arrow-array = "58"
 arrow-schema = "58"
@@ -25,3 +27,12 @@ inherits = "release"
 lto = "fat"
 codegen-units = 1
 opt-level = 3
+
+# Iteration builds for Lambda (cargo lambda build --profile lambda-dev --arm64):
+# thin LTO, parallel codegen and incremental compilation, so a rebuild after a
+# small change only redoes the touched crate instead of re-optimizing everything.
+[profile.lambda-dev]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+incremental = true

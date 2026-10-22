@@ -16,10 +16,9 @@ type Config struct {
 	// Empty: the default credential chain (environment, ECS / EC2 / Lambda role).
 	Profile string
 
-	// Lambda function names (or ARNs). All three are required.
+	// Lambda function names (or ARNs). Both are required.
 	ControlFunction string // create_table, table_info, partitions, batch status
-	IngestFunction  string // writes and compaction
-	QueryFunction   string // query, explain
+	IngestFunction  string // writes, compaction, and query / explain
 
 	// Bucket is the S3 Express directory bucket of the service; write batches are uploaded
 	// under StagingPrefix (default "staging") before the service commits them. Required.
@@ -56,7 +55,6 @@ func (c Config) withDefaults() (Config, error) {
 	for _, f := range []struct{ name, value string }{
 		{"ControlFunction", c.ControlFunction},
 		{"IngestFunction", c.IngestFunction},
-		{"QueryFunction", c.QueryFunction},
 		{"Bucket", c.Bucket},
 	} {
 		if f.value == "" {

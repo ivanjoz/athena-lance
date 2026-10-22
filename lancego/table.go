@@ -86,12 +86,19 @@ func (t *Table[T]) Indexes() []IndexSpec    { return t.indexes }
 
 // CreateOptions tune create_table.
 type CreateOptions struct {
-	IfNotExists    bool   // return ok (created=false) if the table exists with the same spec
+	IfNotExists bool // return ok (created=false) if the table exists with the same spec
+	// Replace overwrites an existing table with an EMPTY one with this schema and spec, and
+	// forgets its partition registry (every partition is new again). Use it to change the
+	// layout or the indexes; the data has to be written again. Excludes IfNotExists.
+	Replace        bool
 	StorageVersion string // Lance file format; empty = service default ("2.2")
 }
 
 // Create asks lance-control to create the table from T's schema, sort key and indexes.
 func (t *Table[T]) Create(ctx context.Context, opts CreateOptions) (*CreateTableResult, error) {
+	if opts.Replace && opts.IfNotExists {
+		return nil, fmt.Errorf("lancego: CreateOptions.Replace and IfNotExists exclude each other")
+	}
 	schemaIPC, err := SchemaIPC(t.layout.schema)
 	if err != nil {
 		return nil, err
@@ -105,6 +112,7 @@ func (t *Table[T]) Create(ctx context.Context, opts CreateOptions) (*CreateTable
 		Indexes:        t.indexes,
 		StorageVersion: opts.StorageVersion,
 		IfNotExists:    opts.IfNotExists,
+		Replace:        opts.Replace,
 	}
 	if len(t.layout.fieldCompression) > 0 {
 		req.FieldCompression = t.layout.fieldCompression

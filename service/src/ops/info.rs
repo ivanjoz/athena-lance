@@ -27,7 +27,7 @@ use crate::app::{App, arrow_schema, load_spec};
 use crate::error::Result;
 use crate::ledger::{self, BatchRecord};
 use crate::lock::{self, LockBody};
-use crate::ops::compact::{CompactLimits, fragment_bytes, plan_groups};
+use crate::ops::compact::{CompactLimits, fragment_bytes, plan_table};
 use crate::ops::control::list_files;
 use crate::ops::write::{PVal, column_pvals};
 use crate::spec::TableSpec;
@@ -316,7 +316,7 @@ pub async fn table_info(app: &App, ds: &Dataset, table: &str, detail: bool) -> R
 
     // Compaction preview with the default limits.
     let limits = CompactLimits::resolve(app, 0, 0, 0)?;
-    let (groups, more) = plan_groups(&sizes, &limits);
+    let (groups, more) = plan_table(&spec, &sizes, &limits);
     let compaction = Compaction {
         limits,
         groups: groups.len(),

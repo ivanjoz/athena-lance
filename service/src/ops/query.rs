@@ -36,12 +36,12 @@ use crate::spec::validate_table_name;
 const LOCAL_MEMORY_MB: u64 = 2048;
 
 pub struct QueryEngine {
-    runtime: Arc<RuntimeEnv>,
-    io: IOTracker,
+    pub(crate) runtime: Arc<RuntimeEnv>,
+    pub(crate) io: IOTracker,
     /// The same allocation on every open: Lance keys its object store cache by this pointer.
     io_wrapper: Arc<dyn WrappingObjectStore>,
     datasets: Mutex<HashMap<String, Cached>>,
-    warm: AtomicBool,
+    pub(crate) warm: AtomicBool,
 }
 
 #[derive(Clone)]
@@ -69,7 +69,7 @@ impl QueryEngine {
     }
 
     /// The table at its latest version, from the cache while it is fresh enough.
-    async fn dataset(&self, app: &App, table: &str, min_version: Option<u64>) -> Result<Arc<Dataset>> {
+    pub(crate) async fn dataset(&self, app: &App, table: &str, min_version: Option<u64>) -> Result<Arc<Dataset>> {
         let cached = self.datasets.lock().unwrap().get(table).cloned();
         let max_age = Duration::from_secs(app.cfg.query.freshness_seconds);
         let ds = match cached {
@@ -168,14 +168,7 @@ pub async fn query(app: &App, req: Query, explain: bool) -> Result<QueryResult> 
 }
 
 async fn run(app: &App, req: &Query, explain: bool, max_rows: usize, started: Instant) -> Result<QueryResult> {
-    let ctx = SessionContext::new_with_config_rt(SessionConfig::new(), app.query.runtime.clone());
-    let mut dataset_versions = BTreeMap::new();
-    for name in referenced_tables(&ctx, &req.sql)? {
-        let ds = app.query.dataset(app, &name, req.min_versions.get(&name).copied()).await?;
-        dataset_versions.insert(name.clone(), ds.version().version);
-        register(&ctx, &name, ds)?;
-    }
-    let (df, columns) = plan(&ctx, &req.sql).await?;
+    let (df, columns, dataset_versions) = prepare(app, &req.sql, &req.min_versions).await?;
     let plan_ms = ms(started);
 
     let (rows, row_count, truncated, plan) = if explain {
@@ -186,6 +179,24 @@ async fn run(app: &App, req: &Query, explain: bool, max_rows: usize, started: In
     };
     let stats = QueryStats { plan_ms, exec_ms: ms(started) - plan_ms, dataset_versions, ..Default::default() };
     Ok(QueryResult { columns, rows, row_count, truncated, stats, plan })
+}
+
+/// Resolves and registers the tables the SQL names, and plans it read-only. Shared by the JSON
+/// query op and the Trino HTTP API, which differ only in how they render the rows.
+pub(crate) async fn prepare(
+    app: &App,
+    sql: &str,
+    min_versions: &BTreeMap<String, u64>,
+) -> Result<(DataFrame, Vec<Column>, BTreeMap<String, u64>)> {
+    let ctx = SessionContext::new_with_config_rt(SessionConfig::new(), app.query.runtime.clone());
+    let mut dataset_versions = BTreeMap::new();
+    for name in referenced_tables(&ctx, sql)? {
+        let ds = app.query.dataset(app, &name, min_versions.get(&name).copied()).await?;
+        dataset_versions.insert(name.clone(), ds.version().version);
+        register(&ctx, &name, ds)?;
+    }
+    let (df, columns) = plan(&ctx, sql).await?;
+    Ok((df, columns, dataset_versions))
 }
 
 /// The distinct tables the SQL references (CTE names excluded). Only tables of the service's
@@ -211,7 +222,7 @@ fn referenced_tables(ctx: &SessionContext, sql: &str) -> Result<Vec<String>> {
     Ok(names)
 }
 
-fn register(ctx: &SessionContext, name: &str, ds: Arc<Dataset>) -> Result<()> {
+pub(crate) fn register(ctx: &SessionContext, name: &str, ds: Arc<Dataset>) -> Result<()> {
     // Unordered: rows of a scan may interleave across fragments; SQL has no order without ORDER BY.
     ctx.register_table(name, Arc::new(LanceTableProvider::new_with_ordering(ds, false, false, false)))
         .map_err(df_error)?;
@@ -219,7 +230,7 @@ fn register(ctx: &SessionContext, name: &str, ds: Arc<Dataset>) -> Result<()> {
 }
 
 /// Plans the SQL as a read-only query: DDL, DML and statements like SET are rejected.
-async fn plan(ctx: &SessionContext, sql: &str) -> Result<(DataFrame, Vec<Column>)> {
+pub(crate) async fn plan(ctx: &SessionContext, sql: &str) -> Result<(DataFrame, Vec<Column>)> {
     let read_only = SQLOptions::new().with_allow_ddl(false).with_allow_dml(false).with_allow_statements(false);
     let df = ctx.sql_with_options(sql, read_only).await.map_err(df_error)?;
     let columns = df
@@ -282,7 +293,7 @@ async fn explain_analyze(df: DataFrame) -> Result<String> {
 
 /// Errors in the SQL itself are the caller's (SQL_ERROR); an exhausted memory pool is
 /// reported as such; anything else is internal.
-fn df_error(e: DataFusionError) -> Error {
+pub(crate) fn df_error(e: DataFusionError) -> Error {
     match e.find_root() {
         DataFusionError::SQL(..)
         | DataFusionError::Plan(..)
@@ -296,7 +307,7 @@ fn df_error(e: DataFusionError) -> Error {
     }
 }
 
-fn ms(since: Instant) -> f64 {
+pub(crate) fn ms(since: Instant) -> f64 {
     (since.elapsed().as_secs_f64() * 1e6).round() / 1e3
 }
 

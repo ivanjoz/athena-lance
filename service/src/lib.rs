@@ -10,6 +10,7 @@ pub mod lock;
 pub mod ops;
 pub mod protocol;
 pub mod spec;
+pub mod trino;
 
 /// JSON logs to stderr (CloudWatch); level from RUST_LOG, default info.
 pub fn init_tracing() {

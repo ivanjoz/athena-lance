@@ -72,10 +72,17 @@ código apuntando `control_function` e `ingest_function` al mismo nombre en `con
 
 ## Pendiente
 
+### Archivo por partición (ADR-012, `docs/plan-archivo-por-particion.md`)
+- Código escrito en el servicio (`write.rs`, `spec.rs`, `compact.rs`, `info.rs`, `control.rs`,
+  `ledger.rs`) y en lancego (`CreateOptions.Replace`), **sin compilar ni desplegar**. Falta:
+  `cargo test -p lance-service`, `deploy/deploy.sh`, recrear las tablas de meteorología
+  (`agroclima/cmd lance -recrear -ejecutar`) y repetir las queries de prueba.
+
 ### Funcionalidad
-- **`lance-query` en AWS**: el código está hecho (servicio + Go: `Query`, `Explain`,
-  `Table.Query` → `[]T`, `DecodeRows`, `MinVersions` con `SaveResult.Version()`), pero falta
-  desplegar `smartberry-lance-query` (`deploy/deploy.sh`) y medir latencia real dentro de AWS.
+- **Query en AWS**: el código está hecho (servicio + Go: `Query`, `Explain`,
+  `Table.Query` → `[]T`, `DecodeRows`, `MinVersions` con `SaveResult.Version()`). Las queries
+  corren en `smartberry-lance-ingest` (ADR-011: dos funciones, timeout de 30 s interno); falta
+  redesplegar (`deploy/deploy.sh`, pasa a 4096 MB) y medir latencia real dentro de AWS.
   Ya verificado en local contra S3 Express con `lance-cli` y con el ejemplo Go
   (`LANCEGO_CLI=… go run ./examples/sales -query -explain`): agregados, `[]Venta` tipado,
   truncado, DML rechazado, y el `explain` muestra el índice BTREE en `WHERE id = 42`.

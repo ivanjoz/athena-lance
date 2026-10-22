@@ -5,7 +5,7 @@
 //	go run ./examples/sales -save -change 7    # only the partition of row 7 is sent again
 //	go run ./examples/sales -delete 1/2026-10-01 -partitions
 //	go run ./examples/sales -compact -info -detail
-//	go run ./examples/sales -query -explain    # SQL on lance-query, typed rows, EXPLAIN ANALYZE
+//	go run ./examples/sales -query -explain    # SQL on lance-ingest, typed rows, EXPLAIN ANALYZE
 package main
 
 import (
@@ -53,7 +53,7 @@ func main() {
 	partitions := flag.Bool("partitions", false, "print the partition registry")
 	info := flag.Bool("info", false, "print table_info")
 	detail := flag.Bool("detail", false, "table_info with per-file stats")
-	query := flag.Bool("query", false, "run example queries on lance-query")
+	query := flag.Bool("query", false, "run example queries on lance-ingest")
 	explain := flag.Bool("explain", false, "print EXPLAIN ANALYZE of an indexed lookup")
 	n := flag.Int("rows", 1000, "rows to generate")
 	flag.Parse()

@@ -19,6 +19,7 @@ type createTableRequest struct {
 	StorageVersion   string            `json:"storage_version,omitempty"`
 	FieldCompression map[string]string `json:"field_compression,omitempty"`
 	IfNotExists      bool              `json:"if_not_exists"`
+	Replace          bool              `json:"replace,omitempty"`
 }
 
 type tableRequest struct {

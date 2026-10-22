@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Builds the service for Lambda (arm64, provided.al2023) and creates or updates the
-# control, ingest and query functions. Every value comes from config.toml.
+# control and ingest functions (ingest also serves queries). Every value comes from config.toml.
 #
-#   deploy/deploy.sh            build + deploy the three functions
+#   deploy/deploy.sh            build + deploy the two functions
 #   deploy/deploy.sh --no-build deploy the last build
 set -euo pipefail
 
@@ -54,4 +54,3 @@ deploy() { # name memory timeout ephemeral
 
 deploy "$(toml lambda.control_function)" "$(toml lambda.control.memory_mb)" "$(toml lambda.control.timeout_seconds)" 512
 deploy "$(toml lambda.ingest_function)" "$(toml lambda.ingest.memory_mb)" "$(toml lambda.ingest.timeout_seconds)" "$(toml lambda.ingest.ephemeral_mb)"
-deploy "$(toml lambda.query_function)" "$(toml lambda.query.memory_mb)" "$(toml lambda.query.timeout_seconds)" 512

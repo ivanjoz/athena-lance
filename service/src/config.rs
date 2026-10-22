@@ -15,6 +15,7 @@ pub struct Config {
     pub service: ServiceCfg,
     pub compaction: Compaction,
     pub query: QueryCfg,
+    pub trino: TrinoCfg,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -71,6 +72,24 @@ pub struct QueryCfg {
     pub max_response_bytes: usize,
     pub freshness_seconds: u64,
     pub memory_fraction: f64,
+}
+
+/// The Trino-compatible HTTP API on the ingest Function URL (trino-api-plan.md).
+#[derive(Debug, Clone, Deserialize)]
+pub struct TrinoCfg {
+    /// The single read-only credential: Basic auth user, and the hex SHA-256 of its key.
+    /// An empty hash rejects every request.
+    pub user: String,
+    pub password_sha256: String,
+    pub catalog: String,
+    pub schema: String,
+    pub server_version: String,
+    pub max_rows: usize,
+    /// Uncompressed JSON per response; beyond it the result is cut with a warning.
+    pub max_result_mb: usize,
+    /// Whole response (execution + sending). The first row must still be ready within
+    /// query.max_timeout_ms.
+    pub max_stream_seconds: u64,
 }
 
 impl Config {

@@ -198,6 +198,25 @@ impl Ledger {
             };
             requests.push(req);
         }
+        self.batch_write(requests).await
+    }
+
+    /// Removes every partition record of a table (create_table with replace).
+    pub async fn delete_partitions(&self, table: &str) -> Result<()> {
+        let mut requests = Vec::new();
+        for p in self.list_partitions(table).await? {
+            let key = HashMap::from([("pk".to_string(), s(table)), ("sk".to_string(), s(format!("p#{}", p.key)))]);
+            requests.push(
+                WriteRequest::builder()
+                    .delete_request(DeleteRequest::builder().set_key(Some(key)).build().map_err(anyhow::Error::from)?)
+                    .build(),
+            );
+        }
+        self.batch_write(requests).await
+    }
+
+    /// BatchWriteItem in chunks of 25, retrying unprocessed items with backoff.
+    async fn batch_write(&self, requests: Vec<WriteRequest>) -> Result<()> {
         for chunk in requests.chunks(25) {
             let mut pending = chunk.to_vec();
             for attempt in 0..8 {
@@ -207,7 +226,7 @@ impl Ledger {
                     .request_items(&self.table, pending.clone())
                     .send()
                     .await
-                    .context("ledger write_partitions")?;
+                    .context("ledger batch_write")?;
                 pending = out.unprocessed_items.and_then(|mut m| m.remove(&self.table)).unwrap_or_default();
                 if pending.is_empty() {
                     break;

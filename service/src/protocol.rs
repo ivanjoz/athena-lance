@@ -19,7 +19,7 @@ pub enum Request {
     Ingest(Ingest),
     ReplacePartitions(ReplacePartitions),
     Compact(Compact),
-    // lance-query (read-only)
+    // lance-ingest too: read-only, cut at query.max_timeout_ms inside the service
     Query(Query),
     Explain(Query),
 }
@@ -93,6 +93,10 @@ pub struct CreateTable {
     pub field_compression: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub if_not_exists: bool,
+    /// If the table exists, overwrite it with an empty version with this schema and spec and
+    /// forget its partition registry. Excludes if_not_exists.
+    #[serde(default)]
+    pub replace: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

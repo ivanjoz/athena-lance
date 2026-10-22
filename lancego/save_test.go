@@ -168,7 +168,6 @@ var testConfig = Config{
 	Bucket:          "bucket--usw2-az1--x-s3",
 	ControlFunction: "lance-control",
 	IngestFunction:  "lance-ingest",
-	QueryFunction:   "lance-query",
 }
 
 func testClient(t *testing.T, tr transport) *Client {
@@ -182,7 +181,7 @@ func testClient(t *testing.T, tr transport) *Client {
 
 func TestConfigRequiredAndDefaults(t *testing.T) {
 	_, err := newClient(Config{ControlFunction: "c"}, newFake())
-	for _, field := range []string{"IngestFunction", "QueryFunction", "Bucket"} {
+	for _, field := range []string{"IngestFunction", "Bucket"} {
 		if err == nil || !strings.Contains(err.Error(), "Config."+field+" is required") {
 			t.Errorf("missing %s not reported: %v", field, err)
 		}

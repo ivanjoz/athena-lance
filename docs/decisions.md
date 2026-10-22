@@ -249,6 +249,7 @@ skipped, and the ledger records hash + `parquet_id` + `records_updated` per part
   - Go `examples/sales -query -explain` through `LANCEGO_CLI`: aggregate decoded with `DecodeRows`,
     `SELECT *` decoded into `[]Venta` (nullable float, UTC timestamps), plan printed.
 - **Not yet deployed:** `smartberry-lance-query` does not exist yet; Lambda latency is unmeasured.
+- **Superseded by ADR-011:** queries run on `smartberry-lance-ingest`; there is no query function.
 
 ## ADR-010: The Go library takes its configuration from the backend — 2026-10-22
 
@@ -259,7 +260,7 @@ service** on Lambda. The configuration belongs to the backend, which keeps it wh
 - `lancego` reads no files or environment variables. `LoadConfig`, the `$LANCE_CONFIG` lookup and
   `LANCEGO_CLI` / `LANCEGO_CLI_LOGS` were removed from the library.
 - `lancego.Config` is a flat struct: `ControlFunction`, `IngestFunction`, `QueryFunction` and
-  `Bucket` are required; `Region` / `Profile` (used by `New`), `StagingPrefix`, `BatchRows`,
+  `Bucket` are required (`QueryFunction` removed in ADR-011); `Region` / `Profile` (used by `New`), `StagingPrefix`, `BatchRows`,
   `MaxRowsPerRequest`, `WaitTimeout` have defaults; `LocalCLI` / `LocalCLILogs` replace the env
   vars for development. `New` and `NewWithAWS` validate it and return an error naming every
   missing field (`NewWithAWS` now returns `(*Client, error)`).
@@ -267,3 +268,43 @@ service** on Lambda. The configuration belongs to the backend, which keeps it wh
   `examples/sales` plays the backend: it reads `config.toml` (and `LANCEGO_CLI`) itself and
   builds the `Config`. The TOML parser remains in `go.mod` only because the example lives in the
   same module; the `lancego` package does not import it.
+
+## ADR-011: Two functions; queries run on lance-ingest — 2026-10-22
+
+- **Functions:** `smartberry-lance-control` (1024 MB, 120 s: metadata ops) and
+  `smartberry-lance-ingest` (4096 MB, 900 s, 2 GB /tmp: writes, compaction, `query` / `explain`).
+  `smartberry-lance-query` (ADR-009) was never deployed and is dropped.
+- **Why:** both data paths want the same thing, memory (= CPU) and /tmp to spill to. A third
+  function only added a deploy target and a config field. The one thing the query function gave,
+  a short timeout, does not need a function: the service already cuts each query with
+  `tokio::time::timeout` (`ops/query.rs`), so `query.default_timeout_ms` = `max_timeout_ms` =
+  30000 is the query limit, independent of the 900 s that writes need.
+- **Memory:** 3008 → 4096 MB. The DataFusion pool is `memory_fraction` of the function memory.
+  Queries and writes run in separate invocations (separate containers), so they do not share it.
+- **Go:** `lancego.Config.QueryFunction` is removed; `Client.Query` / `Explain` invoke
+  `IngestFunction`. `ControlFunction`, `IngestFunction` and `Bucket` are the required fields.
+- **Trade-off accepted:** queries and writes share the function's concurrency and its logs. If
+  queries ever need their own concurrency limit or provisioned concurrency, a second function
+  name pointing at the same zip is a config change again.
+
+## ADR-012: One file per partition; partition keys are indexed — 2026-10-22
+
+Plan and measurements: `docs/plan-archivo-por-particion.md`. **Not compiled or deployed yet.**
+
+- **Problem:** the first real load (smartberry weather, ~10.9 M rows) left one file per *write* (one per
+  ubicación, all its years), and a query for one ubicación and one day opened all 163 files (73 MB,
+  ~385 ms) because Lance 13 skips files only through scalar indexes and the tables had none.
+- **Write:** `replace_partitions` splits the sorted batch by partition key and writes each group with
+  its own `InsertBuilder`; all files go into the one `Update` commit (still atomic). A partition is one
+  file, and replacing it removes the old file whole (no deletion files). `ingest` is unchanged.
+- **Spec:** `validate` adds a BITMAP index on every partition key that has no BTREE/BITMAP declared.
+  `ensure_indexes` builds it on the first write and refreshes it on every write.
+- **Compaction:** partitioned tables are never merged (it would mix partitions); `compact` only cleans up
+  old versions for them and `table_info` no longer recommends it.
+- **Replace:** `create_table` with `replace: true` overwrites an existing table with an empty version
+  (`WriteMode::Overwrite`, which also drops its indexes) and deletes its partition registry. Overwrite
+  rather than deleting the prefix keeps versions increasing, so the query engine's dataset cache never
+  sees an old version number with new data. `lancego.CreateOptions.Replace`.
+- **Cost accepted:** more, smaller files (1289 per weather table instead of 163): full-table scans do
+  more GETs. The screens always read one ubicación.
+

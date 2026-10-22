@@ -48,7 +48,6 @@ client, err := lancego.New(ctx, lancego.Config{
 	Bucket:          "smartberry-lance-data--usw2-az1--x-s3",
 	ControlFunction: "smartberry-lance-control",
 	IngestFunction:  "smartberry-lance-ingest",
-	QueryFunction:   "smartberry-lance-query",
 })
 // or, with an aws.Config the application already loaded:
 client, err := lancego.NewWithAWS(cfg, awsCfg)
@@ -56,7 +55,7 @@ client, err := lancego.NewWithAWS(cfg, awsCfg)
 
 | Field | Required | Default / meaning |
 |---|---|---|
-| `ControlFunction`, `IngestFunction`, `QueryFunction` | yes | Lambda names or ARNs |
+| `ControlFunction`, `IngestFunction` | yes | Lambda names or ARNs: control ops go to the first; writes, compaction and queries to the second |
 | `Bucket` | yes | S3 Express bucket of the service (write batches are staged there) |
 | `Region`, `Profile` | no | used by `New` to load credentials; empty profile = default chain (role) |
 | `StagingPrefix` | no | `staging` |
@@ -71,7 +70,7 @@ client, err := lancego.NewWithAWS(cfg, awsCfg)
 
 ## Query
 
-`client.Query(ctx, sql, opts)` runs read-only SQL (DataFusion) on `lambda.query_function`; any
+`client.Query(ctx, sql, opts)` runs read-only SQL (DataFusion) on `lambda.ingest_function`; any
 table of the service can be named, including tables created after the function started.
 
 - `Table[T].Query` decodes the rows into `[]T` by lance column name; `DecodeRows[R](res)` does the
@@ -85,6 +84,8 @@ table of the service can be named, including tables created after the function s
 - `res.Stats`: elapsed / plan / exec ms, bytes read and GET requests, cold start, and the version
   of each table read. `client.Explain(ctx, sql, opts)` runs it with `EXPLAIN ANALYZE` into
   `res.Plan` (index use, pruning, metrics).
+- Timeout: the service cuts the query at `TimeoutMS` (default and cap `query.default_timeout_ms` /
+  `query.max_timeout_ms`, 30 s), inside the function: its own 900 s timeout is for writes.
 - Errors: `SQL_ERROR` (syntax, unknown table/column, DDL/DML/SET, schema-qualified names),
   `QUERY_TIMEOUT` (`TimeoutMS`, default `query.default_timeout_ms`), `RESOURCES_EXHAUSTED`
   (DataFusion memory pool = `query.memory_fraction` of the function memory), `TABLE_NOT_FOUND`.
@@ -99,10 +100,19 @@ table of the service can be named, including tables created after the function s
 3. Reads the partition registry and skips partitions whose hash didn't change (`Force` sends all).
 4. Sends the rest as `replace_partitions`: every old row of those partitions is deleted and the new
    ones inserted **in one atomic Lance commit**. A request carries up to
-   `Config.MaxRowsPerRequest` rows and never splits a partition.
+   `Config.MaxRowsPerRequest` rows and never splits a partition. The service writes **one file per
+   partition**, so a replace removes the old file whole.
 5. Returns when the service confirms each batch (`committed`, with the Lance version and unix time)
    or rejects it (`ErrBatchFailed`, wrapping the `*APIError`). `NoWait` sends asynchronous
    invocations instead; `Wait(batchID)` waits later.
+
+Partitions are physical and indexed: the service adds a BITMAP index on every partition key (unless
+the table declares a BTREE/BITMAP on it), and Lance skips files only through scalar indexes. A query
+filtered by the partition keys reads only those partitions' files. `Compact` never merges files of a
+partitioned table; it only cleans up old versions.
+
+To change the layout or the indexes of an existing table, `Create` with `CreateOptions{Replace: true}`
+overwrites it with an empty version and forgets its registry; then write the data again.
 
 The service records each partition in DynamoDB (`ledger.dynamodb_table`): hash, partition ID
 (`GetParquetID`), `records_updated` (from `SaveOptions.RecordsUpdated`, stored as is), rows,
@@ -185,6 +195,6 @@ Maps, interfaces, channels, funcs and complex numbers are rejected.
   failed batches, deletes.
 - Against the real service: see the end-to-end status in `docs/decisions.md` (ADR-008).
 - `DecodeRows` / `Table.Query`: tested against the service's JSON rendering (`query_test.go`).
-  `Query` / `Explain` need the `smartberry-lance-query` function (`deploy/deploy.sh`).
+  `Query` / `Explain` run on `smartberry-lance-ingest` (`deploy/deploy.sh`).
 
 Example: `go run ./examples/sales` (stage only) or `go run ./examples/sales -create -save`.

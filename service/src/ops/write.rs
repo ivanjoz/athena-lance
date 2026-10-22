@@ -5,14 +5,15 @@
 //!   1. ledger says committed -> return it (idempotent retry)
 //!   2. ledger says pending (an earlier attempt died) -> if the commit carrying this batch id
 //!      exists, only finish the ledger
-//!   3. read + validate the staged Arrow files, sort by the sort key, commit
+//!   3. read + validate the staged Arrow files, sort by the sort key, write one file per
+//!      partition (replace_partitions), commit
 //!   4. build/refresh indexes, write the partition registry, mark the batch committed
 
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::sync::{Arc, LazyLock};
 
-use arrow::array::{Array, ArrayRef, AsArray, RecordBatch};
+use arrow::array::{Array, ArrayRef, AsArray, RecordBatch, UInt32Array};
 use arrow::compute::{SortColumn, concat_batches, lexsort_to_indices, take_record_batch};
 use arrow::datatypes::*;
 use arrow::ipc::reader::StreamReader;
@@ -223,16 +224,25 @@ async fn apply(
         data_storage_version: Some(spec.file_version()),
         ..Default::default()
     };
-    let new_fragments = match batch {
-        Some(b) if b.num_rows() > 0 => {
-            let txn = InsertBuilder::new(ds.clone()).with_params(&params).execute_uncommitted(vec![b]).await?;
-            let Operation::Append { fragments } = txn.operation else {
-                return Err(Error::Internal(anyhow::anyhow!("unexpected insert operation")));
-            };
-            fragments
-        }
+    // Partitioned tables get one file per partition: each group is written on its own, so the
+    // partition is also the physical unit (a query filtered by it reads only its files, and a
+    // replace removes the old file whole instead of leaving a deletion file). All the files go
+    // into the single commit below, so the replace stays atomic.
+    let groups = match batch {
+        Some(b) if b.num_rows() > 0 => match partitions {
+            Some(_) => split_by_partition(&b, &spec.partition_keys)?,
+            None => vec![b],
+        },
         _ => vec![],
     };
+    let mut new_fragments = Vec::new();
+    for b in groups {
+        let txn = InsertBuilder::new(ds.clone()).with_params(&params).execute_uncommitted(vec![b]).await?;
+        let Operation::Append { fragments } = txn.operation else {
+            return Err(Error::Internal(anyhow::anyhow!("unexpected insert operation")));
+        };
+        new_fragments.extend(fragments);
+    }
 
     let mut rows_deleted = 0;
     let operation = match partitions {
@@ -303,6 +313,27 @@ fn sort(batch: &RecordBatch, sort_key: &[String]) -> Result<RecordBatch> {
         .collect();
     let idx = lexsort_to_indices(&columns, None)?;
     Ok(take_record_batch(batch, &idx)?)
+}
+
+/// Splits a sorted batch into one batch per partition, in partition order. Rows keep their
+/// order inside each partition, so the sort key still holds in every file.
+fn split_by_partition(batch: &RecordBatch, keys: &[String]) -> Result<Vec<RecordBatch>> {
+    let cols = keys
+        .iter()
+        .map(|k| column_pvals(batch.column_by_name(k).expect("validated partition key")))
+        .collect::<Result<Vec<_>>>()?;
+    let mut rows_of: std::collections::BTreeMap<Vec<PVal>, Vec<u32>> = std::collections::BTreeMap::new();
+    for row in 0..batch.num_rows() {
+        let key: Vec<PVal> = cols.iter().map(|c| c[row].clone()).collect();
+        rows_of.entry(key).or_default().push(row as u32);
+    }
+    if rows_of.len() == 1 {
+        return Ok(vec![batch.clone()]);
+    }
+    rows_of
+        .into_values()
+        .map(|rows| Ok(take_record_batch(batch, &UInt32Array::from(rows))?))
+        .collect()
 }
 
 /// A partition value, comparable across the JSON request and Arrow columns.
@@ -490,4 +521,65 @@ pub async fn ensure_indexes(ds: &mut Dataset, spec: &TableSpec) -> Result<()> {
         ds.optimize_indices(&OptimizeOptions::default()).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{Int16Array, Int32Array, Int64Array};
+
+    fn batch(ubicacion: &[i32], anio: &[i16], hora: &[i64]) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("ubicacion_id", DataType::Int32, false),
+            Field::new("anio", DataType::Int16, false),
+            Field::new("fecha_hora", DataType::Int64, false),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(ubicacion.to_vec())),
+                Arc::new(Int16Array::from(anio.to_vec())),
+                Arc::new(Int64Array::from(hora.to_vec())),
+            ],
+        )
+        .unwrap()
+    }
+
+    fn column_i64(b: &RecordBatch, name: &str) -> Vec<i64> {
+        column_pvals(b.column_by_name(name).unwrap())
+            .unwrap()
+            .into_iter()
+            .map(|v| match v {
+                PVal::I(i) => i,
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn one_batch_per_partition_in_partition_order_keeping_row_order() {
+        let keys = vec!["ubicacion_id".to_string(), "anio".to_string()];
+        let b = batch(&[4, 4, 4, 1, 4], &[2026, 2025, 2026, 2025, 2025], &[30, 10, 31, 5, 11]);
+        let parts = split_by_partition(&b, &keys).unwrap();
+        assert_eq!(parts.len(), 3);
+        // (1, 2025), (4, 2025), (4, 2026)
+        assert_eq!(column_i64(&parts[0], "fecha_hora"), vec![5]);
+        assert_eq!(column_i64(&parts[1], "fecha_hora"), vec![10, 11]);
+        assert_eq!(column_i64(&parts[2], "fecha_hora"), vec![30, 31]);
+        for p in &parts {
+            let u = column_i64(p, "ubicacion_id");
+            let a = column_i64(p, "anio");
+            assert!(u.iter().all(|x| *x == u[0]) && a.iter().all(|x| *x == a[0]), "mixed partition");
+        }
+        assert_eq!(parts.iter().map(|p| p.num_rows()).sum::<usize>(), b.num_rows());
+    }
+
+    #[test]
+    fn a_single_partition_is_returned_as_is() {
+        let keys = vec!["ubicacion_id".to_string(), "anio".to_string()];
+        let b = batch(&[4, 4], &[2026, 2026], &[1, 2]);
+        let parts = split_by_partition(&b, &keys).unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].num_rows(), 2);
+    }
 }

@@ -8,6 +8,11 @@
 //! At most `max_tasks` groups are planned per run, so one run fits in the Lambda timeout;
 //! `more = true` tells the caller to run it again.
 //!
+//! Partitioned tables are never merged: every partition is one file (ops/write.rs) and a
+//! replace removes the old file whole, so there is nothing to join, and joining two partitions
+//! would undo the layout that lets a query read only its partitions' files. For them `compact`
+//! only cleans up old versions.
+//!
 //! After compacting, versions older than `service.version_retention_hours` are cleaned up,
 //! which is what actually deletes the replaced files.
 
@@ -20,10 +25,11 @@ use lance::dataset::optimize::{
 use lance_table::format::Fragment;
 use serde::Serialize;
 
-use crate::app::App;
+use crate::app::{App, load_spec};
 use crate::error::{Error, Result, code};
 use crate::ledger::{self, BatchRecord};
 use crate::protocol::Compact;
+use crate::spec::TableSpec;
 
 const MB: u64 = 1 << 20;
 
@@ -91,12 +97,22 @@ pub fn plan_groups(sizes: &[Option<u64>], limits: &CompactLimits) -> (Vec<Range<
     (groups, more)
 }
 
+/// The groups a compaction would merge for this table: none for a partitioned table (see the
+/// module docs), the size/count plan otherwise.
+pub fn plan_table(spec: &TableSpec, sizes: &[Option<u64>], limits: &CompactLimits) -> (Vec<Range<usize>>, bool) {
+    if !spec.partition_keys.is_empty() {
+        return (Vec::new(), false);
+    }
+    plan_groups(sizes, limits)
+}
+
 /// Total size of a fragment's data files, if the manifest records all of them.
 pub fn fragment_bytes(f: &Fragment) -> Option<u64> {
     f.files.iter().map(|d| d.file_size_bytes.get().map(|n| n.get())).sum()
 }
 
 struct SizeCountPlanner {
+    spec: TableSpec,
     limits: CompactLimits,
     options: CompactionOptions,
 }
@@ -106,7 +122,7 @@ impl CompactionPlanner for SizeCountPlanner {
     async fn plan(&self, dataset: &Dataset) -> lance::Result<CompactionPlan> {
         let fragments: Vec<Fragment> = dataset.get_fragments().iter().map(|f| f.metadata().clone()).collect();
         let sizes: Vec<Option<u64>> = fragments.iter().map(fragment_bytes).collect();
-        let (groups, _) = plan_groups(&sizes, &self.limits);
+        let (groups, _) = plan_table(&self.spec, &sizes, &self.limits);
         Ok(CompactionPlan {
             tasks: groups.into_iter().map(|r| TaskData { fragments: fragments[r].to_vec() }).collect(),
             read_version: dataset.version().version,
@@ -184,8 +200,9 @@ async fn compact_locked(
 
     let run = async {
         let version_before = ds.version().version;
+        let spec = load_spec(ds)?;
         let sizes: Vec<Option<u64>> = ds.get_fragments().iter().map(|f| fragment_bytes(f.metadata())).collect();
-        let (_, more) = plan_groups(&sizes, &limits);
+        let (groups, more) = plan_table(&spec, &sizes, &limits);
         let options = CompactionOptions {
             // Each planned group must become exactly one output file: the row target only
             // splits outputs, so set it above any group, and cap bytes as a hard limit.
@@ -193,9 +210,13 @@ async fn compact_locked(
             max_bytes_per_file: Some(limits.max_file_bytes as usize),
             ..Default::default()
         };
-        let planner = SizeCountPlanner { limits, options };
+        let planner = SizeCountPlanner { spec, limits, options };
         lock.check()?;
-        let metrics = compact_files_with_planner(ds, None, &planner).await?;
+        let metrics = if groups.is_empty() {
+            Default::default()
+        } else {
+            compact_files_with_planner(ds, None, &planner).await?
+        };
         let retention = chrono::Duration::hours(app.cfg.service.version_retention_hours as i64);
         let stats = ds.cleanup_old_versions(retention, None, None).await?;
         Ok::<_, Error>(CompactResult {
@@ -284,6 +305,23 @@ mod tests {
     fn single_fragment_groups_are_skipped() {
         let (g, _) = plan_groups(&mb(&[30, 30, 30]), &limits(50, 20, 10));
         assert!(g.is_empty());
+    }
+
+    #[test]
+    fn partitioned_tables_are_never_merged() {
+        let spec = |keys: Vec<String>| TableSpec {
+            spec_version: 1,
+            partition_keys: keys,
+            sort_key: vec![],
+            indexes: vec![],
+            storage_version: "2.2".into(),
+            field_compression: Default::default(),
+        };
+        let sizes = mb(&[1; 40]);
+        let (g, more) = plan_table(&spec(vec!["ubicacion_id".into()]), &sizes, &limits(50, 20, 10));
+        assert!(g.is_empty() && !more);
+        let (g, _) = plan_table(&spec(vec![]), &sizes, &limits(50, 20, 10));
+        assert_eq!(g, vec![0..20, 20..40]);
     }
 
     #[test]

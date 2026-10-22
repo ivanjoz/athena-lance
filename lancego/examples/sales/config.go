@@ -25,7 +25,6 @@ type repoConfig struct {
 	Lambda struct {
 		ControlFunction string `toml:"control_function"`
 		IngestFunction  string `toml:"ingest_function"`
-		QueryFunction   string `toml:"query_function"`
 	} `toml:"lambda"`
 	Ingest struct {
 		BatchRows          int `toml:"batch_rows"`
@@ -50,7 +49,6 @@ func loadConfig() (lancego.Config, error) {
 		Profile:           rc.AWS.Profile,
 		ControlFunction:   rc.Lambda.ControlFunction,
 		IngestFunction:    rc.Lambda.IngestFunction,
-		QueryFunction:     rc.Lambda.QueryFunction,
 		Bucket:            rc.Storage.Bucket,
 		StagingPrefix:     rc.Storage.StagingPrefix,
 		BatchRows:         rc.Ingest.BatchRows,

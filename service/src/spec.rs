@@ -120,6 +120,19 @@ pub fn validate(schema: &Schema, mut spec: TableSpec) -> Result<TableSpec> {
         }
     }
 
+    // Every partition key gets a BITMAP index unless the caller declared a BTREE/BITMAP on it.
+    // Lance only skips files through scalar indexes, so this is what lets a query filtered by a
+    // partition read only that partition's files (one file per partition, ops/write.rs).
+    for k in &spec.partition_keys {
+        let declared = spec.indexes.iter().any(|ix| {
+            ix.column == *k && matches!(ix.index_type.to_uppercase().as_str(), "BTREE" | "BITMAP")
+        });
+        let indexable = top(k).is_some_and(|f| is_scalar(f.data_type()));
+        if !declared && indexable {
+            spec.indexes.push(IndexSpec { column: k.clone(), index_type: "BITMAP".into(), name: None });
+        }
+    }
+
     if spec.indexes.len() > MAX_INDEXES {
         return Err(invalid(format!("at most {MAX_INDEXES} indexes")));
     }
@@ -277,6 +290,25 @@ mod tests {
         assert_eq!(s.storage_version, "2.2");
         assert_eq!(s.indexes[0].index_type, "BTREE");
         assert_eq!(s.indexes[0].name.as_deref(), Some("amount_btree"));
+    }
+
+    #[test]
+    fn partition_keys_get_a_bitmap_index() {
+        let s = validate(&schema(), spec()).unwrap();
+        let names: Vec<&str> = s.indexes.iter().filter_map(|i| i.name.as_deref()).collect();
+        assert!(names.contains(&"filial_id_bitmap"), "{names:?}");
+        assert!(names.contains(&"fecha_bitmap"), "{names:?}");
+
+        // A BTREE declared on a partition key replaces the automatic BITMAP.
+        let mut declared = spec();
+        declared.indexes.push(IndexSpec { column: "filial_id".into(), index_type: "btree".into(), name: None });
+        let s = validate(&schema(), declared).unwrap();
+        assert!(s.indexes.iter().any(|i| i.name.as_deref() == Some("filial_id_btree")));
+        assert!(!s.indexes.iter().any(|i| i.name.as_deref() == Some("filial_id_bitmap")));
+
+        // Validating twice gives the same spec (create_table compares the stored spec).
+        let once = validate(&schema(), spec()).unwrap();
+        assert_eq!(validate(&schema(), once.clone()).unwrap(), once);
     }
 
     #[test]

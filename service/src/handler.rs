@@ -1,6 +1,7 @@
 //! Request dispatch and the response envelope `{request_id, ok, result | error}`.
-//! The same binary backs every function (lance-control, lance-ingest, lance-query); the Go
-//! client sends control ops, writes and queries to each, which only differ in timeout/memory.
+//! The same binary backs both functions (lance-control, lance-ingest), which only differ in
+//! timeout/memory: the Go client sends control ops to lance-control, and writes and queries to
+//! lance-ingest. Every op is accepted by either.
 
 use std::time::Instant;
 

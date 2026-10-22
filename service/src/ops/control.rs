@@ -1,4 +1,4 @@
-//! Control ops: create_table, list_tables, list_partitions, get_batch.
+//! Control ops: create_table (also replace), list_tables, list_partitions, get_batch.
 
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -32,6 +32,9 @@ pub struct CreateTableResult {
 
 pub async fn create_table(app: &App, req: CreateTable) -> Result<CreateTableResult> {
     validate_table_name(&req.table)?;
+    if req.replace && req.if_not_exists {
+        return Err(Error::api(code::BAD_REQUEST, "replace and if_not_exists exclude each other"));
+    }
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&req.schema_ipc_b64)
         .map_err(|e| Error::api(code::BAD_REQUEST, format!("schema_ipc_b64: {e}")))?;
@@ -52,7 +55,7 @@ pub async fn create_table(app: &App, req: CreateTable) -> Result<CreateTableResu
     let schema = Arc::new(with_compression(&schema, &spec));
 
     let lock = app.lock(&req.table, "create_table", "create_table").await?;
-    let result = create_locked(app, &req.table, schema, spec, req.if_not_exists).await;
+    let result = create_locked(app, &req.table, schema, spec, req.if_not_exists, req.replace).await;
     lock.release().await;
     result
 }
@@ -63,8 +66,17 @@ async fn create_locked(
     schema: Arc<Schema>,
     spec: TableSpec,
     if_not_exists: bool,
+    replace: bool,
 ) -> Result<CreateTableResult> {
+    let mut mode = WriteMode::Create;
     match app.open(table).await {
+        Ok(_) if replace => {
+            // Overwrite and not a delete of the prefix: versions keep increasing, so the query
+            // engine's dataset cache sees the new version like any write, and an old version
+            // number never names new data. Overwrite also drops every index; the old files go
+            // with the version cleanup.
+            mode = WriteMode::Overwrite;
+        }
         Ok(ds) => {
             let current = load_spec(&ds)?;
             let diff = schema_diff(&arrow_schema(&ds), &schema);
@@ -85,7 +97,7 @@ async fn create_locked(
     }
 
     let params = WriteParams {
-        mode: WriteMode::Create,
+        mode,
         data_storage_version: Some(spec.file_version()),
         session: Some(app.session.clone()),
         ..Default::default()
@@ -94,6 +106,11 @@ async fn create_locked(
     let mut ds = Dataset::write(empty, &app.cfg.table_uri(table), Some(params)).await?;
     let spec_json = serde_json::to_string(&spec).map_err(anyhow::Error::from)?;
     ds.update_config([(SPEC_CONFIG_KEY, spec_json.as_str())]).await?;
+    if matches!(mode, WriteMode::Overwrite) {
+        // The registry described the old data: without it every partition is new again.
+        app.ledger.delete_partitions(table).await?;
+        tracing::warn!(table, version = ds.version().version, "table replaced");
+    }
     let info = info::table_info(app, &ds, table, false).await?;
     Ok(CreateTableResult { created: true, table: info })
 }

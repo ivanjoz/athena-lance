@@ -1,4 +1,6 @@
 target/
 *.zip
+# Local secrets (the Trino API key); config.toml only holds its hash.
+.secrets/
 # stale lockfile from before the workspace (the root Cargo.lock is the one used)
 spikes/spike-a/Cargo.lock
