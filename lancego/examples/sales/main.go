@@ -59,7 +59,7 @@ func main() {
 	flag.Parse()
 	ctx := context.Background()
 
-	cfg, err := lancego.LoadConfig("")
+	cfg, err := loadConfig()
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -19,7 +19,7 @@ type SaveOptions struct {
 	// waiting for the commit; use Wait / Batch with the returned batch IDs.
 	NoWait bool
 	// MaxRowsPerBatch caps the rows sent in one request (one Lance commit). A partition is
-	// never split. 0 = config ingest.max_rows_per_request.
+	// never split. 0 = Config.MaxRowsPerRequest.
 	MaxRowsPerBatch int
 }
 
@@ -90,7 +90,7 @@ func (t *Table[T]) Save(ctx context.Context, rows []T, opts SaveOptions) (*SaveR
 
 	maxRows := opts.MaxRowsPerBatch
 	if maxRows == 0 {
-		maxRows = t.c.cfg.Ingest.MaxRowsPerRequest
+		maxRows = t.c.cfg.MaxRowsPerRequest
 	}
 	for _, batch := range splitBatches(pending, maxRows) {
 		st, err := t.sendPartitions(ctx, batch, !opts.NoWait)
@@ -130,7 +130,7 @@ func (t *Table[T]) Partitions(ctx context.Context) ([]PartitionInfo, error) {
 	var out struct {
 		Partitions []PartitionInfo `json:"partitions"`
 	}
-	err := t.c.invoke(ctx, t.c.cfg.Lambda.ControlFunction, tableRequest{Op: "list_partitions", Table: t.def.Name}, &out)
+	err := t.c.invoke(ctx, t.c.cfg.ControlFunction, tableRequest{Op: "list_partitions", Table: t.def.Name}, &out)
 	return out.Partitions, err
 }
 
@@ -138,7 +138,7 @@ func (t *Table[T]) Partitions(ctx context.Context) ([]PartitionInfo, error) {
 func (t *Table[T]) Batch(ctx context.Context, batchID string) (*BatchStatus, error) {
 	var out BatchStatus
 	req := batchRequest{Op: "get_batch", Table: t.def.Name, BatchID: batchID}
-	if err := t.c.invoke(ctx, t.c.cfg.Lambda.ControlFunction, req, &out); err != nil {
+	if err := t.c.invoke(ctx, t.c.cfg.ControlFunction, req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -148,11 +148,11 @@ func (t *Table[T]) Batch(ctx context.Context, batchID string) (*BatchStatus, err
 var ErrBatchFailed = errors.New("lancego: batch failed")
 
 // Wait polls the batch until it is committed or failed, or ctx ends. Without a deadline on
-// ctx it gives up after config ingest.wait_timeout_seconds.
+// ctx it gives up after Config.WaitTimeout.
 func (t *Table[T]) Wait(ctx context.Context, batchID string) (*BatchStatus, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(t.c.cfg.Ingest.WaitTimeoutSeconds)*time.Second)
+		ctx, cancel = context.WithTimeout(ctx, t.c.cfg.WaitTimeout)
 		defer cancel()
 	}
 	delay := 250 * time.Millisecond

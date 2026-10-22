@@ -1,69 +1,82 @@
 package lancego
 
 import (
-	"fmt"
-	"os"
-	"path/filepath"
-
-	"github.com/BurntSushi/toml"
+	"errors"
+	"time"
 )
 
-// Config holds the subset of the repo's config.toml that clients need.
+// Config is everything the client needs to reach the Lance service. The application fills
+// it from its own configuration and passes it to New / NewWithAWS: the library reads no
+// configuration files or environment variables.
 type Config struct {
-	AWS struct {
-		Profile string `toml:"profile"` // empty: default credential chain (e.g. a Lambda role)
-		Region  string `toml:"region"`
-	} `toml:"aws"`
-	Storage struct {
-		Bucket        string `toml:"bucket"`
-		StagingPrefix string `toml:"staging_prefix"`
-	} `toml:"storage"`
-	Lambda struct {
-		ControlFunction string `toml:"control_function"`
-		IngestFunction  string `toml:"ingest_function"` // writes and compaction
-		QueryFunction   string `toml:"query_function"`
-	} `toml:"lambda"`
-	Ingest struct {
-		BatchRows          int `toml:"batch_rows"`
-		MaxRowsPerRequest  int `toml:"max_rows_per_request"`
-		WaitTimeoutSeconds int `toml:"wait_timeout_seconds"`
-	} `toml:"ingest"`
+	// Region of the functions and the bucket, used by New to load AWS credentials.
+	// NewWithAWS takes it from the aws.Config instead.
+	Region string
+	// Profile is an optional AWS shared-config profile for New (local development).
+	// Empty: the default credential chain (environment, ECS / EC2 / Lambda role).
+	Profile string
+
+	// Lambda function names (or ARNs). All three are required.
+	ControlFunction string // create_table, table_info, partitions, batch status
+	IngestFunction  string // writes and compaction
+	QueryFunction   string // query, explain
+
+	// Bucket is the S3 Express directory bucket of the service; write batches are uploaded
+	// under StagingPrefix (default "staging") before the service commits them. Required.
+	Bucket        string
+	StagingPrefix string
+
+	// BatchRows is the number of rows per Arrow record batch in uploaded files. Default 65536.
+	BatchRows int
+	// MaxRowsPerRequest caps the rows of one write request (one Lance commit); a partition
+	// is never split. Default 1,000,000.
+	MaxRowsPerRequest int
+	// WaitTimeout bounds Wait (and Save with NoWait followed by Wait) when ctx has no
+	// deadline. Default 15 minutes.
+	WaitTimeout time.Duration
+
+	// LocalCLI, for development and tests: the path of the service's lance-cli binary. When
+	// set, requests run through it locally instead of invoking Lambda (uploads still go to S3).
+	LocalCLI string
+	// LocalCLILogs copies the service logs of LocalCLI runs to stderr.
+	LocalCLILogs bool
 }
 
-// LoadConfig reads config.toml from path. With an empty path it uses $LANCE_CONFIG,
-// or else the first config.toml found walking up from the working directory
-// (the same lookup the Rust service uses).
-func LoadConfig(path string) (Config, error) {
-	var cfg Config
-	if path == "" {
-		var err error
-		if path, err = findConfig(); err != nil {
-			return cfg, err
-		}
-	}
-	if _, err := toml.DecodeFile(path, &cfg); err != nil {
-		return cfg, fmt.Errorf("lancego: reading %s: %w", path, err)
-	}
-	return cfg, nil
-}
+// Defaults applied by New / NewWithAWS to zero fields.
+const (
+	DefaultStagingPrefix     = "staging"
+	DefaultBatchRows         = 65536
+	DefaultMaxRowsPerRequest = 1_000_000
+	DefaultWaitTimeout       = 15 * time.Minute
+)
 
-func findConfig() (string, error) {
-	if p := os.Getenv("LANCE_CONFIG"); p != "" {
-		return p, nil
-	}
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	for {
-		p := filepath.Join(dir, "config.toml")
-		if st, err := os.Stat(p); err == nil && !st.IsDir() {
-			return p, nil
+// withDefaults validates the required fields and fills the optional ones.
+func (c Config) withDefaults() (Config, error) {
+	var missing []error
+	for _, f := range []struct{ name, value string }{
+		{"ControlFunction", c.ControlFunction},
+		{"IngestFunction", c.IngestFunction},
+		{"QueryFunction", c.QueryFunction},
+		{"Bucket", c.Bucket},
+	} {
+		if f.value == "" {
+			missing = append(missing, errors.New("lancego: Config."+f.name+" is required"))
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", fmt.Errorf("lancego: config.toml not found (set LANCE_CONFIG)")
-		}
-		dir = parent
 	}
+	if err := errors.Join(missing...); err != nil {
+		return c, err
+	}
+	if c.StagingPrefix == "" {
+		c.StagingPrefix = DefaultStagingPrefix
+	}
+	if c.BatchRows <= 0 {
+		c.BatchRows = DefaultBatchRows
+	}
+	if c.MaxRowsPerRequest <= 0 {
+		c.MaxRowsPerRequest = DefaultMaxRowsPerRequest
+	}
+	if c.WaitTimeout <= 0 {
+		c.WaitTimeout = DefaultWaitTimeout
+	}
+	return c, nil
 }

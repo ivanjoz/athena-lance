@@ -110,7 +110,7 @@ func (t *Table[T]) Create(ctx context.Context, opts CreateOptions) (*CreateTable
 		req.FieldCompression = t.layout.fieldCompression
 	}
 	var out CreateTableResult
-	if err := t.c.invoke(ctx, t.c.cfg.Lambda.ControlFunction, req, &out); err != nil {
+	if err := t.c.invoke(ctx, t.c.cfg.ControlFunction, req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -126,7 +126,7 @@ type InsertOptions struct {
 	// BatchID identifies the batch for idempotency: re-sending the same BatchID is a
 	// no-op on the service. Empty = a new unique ID. Allowed: [A-Za-z0-9_.-], max 100.
 	BatchID string
-	// BatchRows is the max rows per Arrow record batch; 0 = config ingest.batch_rows.
+	// BatchRows is the max rows per Arrow record batch; 0 = Config.BatchRows.
 	BatchRows int
 }
 
@@ -148,15 +148,12 @@ type InsertResult struct {
 var batchIDRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}$`)
 
 // Stage converts rows to an Arrow IPC stream and uploads it to
-// s3://<bucket>/<staging_prefix>/<table>/<batch_id>/part-0001.arrows without queueing it.
+// s3://<Bucket>/<StagingPrefix>/<table>/<batch_id>/part-0001.arrows without queueing it.
 func (t *Table[T]) Stage(ctx context.Context, rows []T, opts InsertOptions) (*StagedBatch, error) {
 	if len(rows) == 0 {
 		return nil, fmt.Errorf("lancego: no rows to insert")
 	}
 	cfg := t.c.cfg
-	if cfg.Storage.Bucket == "" {
-		return nil, fmt.Errorf("lancego: storage.bucket not configured")
-	}
 	batchID := opts.BatchID
 	if batchID == "" {
 		batchID = newBatchID()
@@ -165,7 +162,7 @@ func (t *Table[T]) Stage(ctx context.Context, rows []T, opts InsertOptions) (*St
 	}
 	batchRows := opts.BatchRows
 	if batchRows == 0 {
-		batchRows = cfg.Ingest.BatchRows
+		batchRows = cfg.BatchRows
 	}
 
 	var buf bytes.Buffer
@@ -173,14 +170,14 @@ func (t *Table[T]) Stage(ctx context.Context, rows []T, opts InsertOptions) (*St
 		return nil, err
 	}
 	size := buf.Len()
-	key := path.Join(cfg.Storage.StagingPrefix, t.def.Name, batchID, "part-0001.arrows")
-	if err := t.c.tr.putObject(ctx, cfg.Storage.Bucket, key, "application/vnd.apache.arrow.stream", buf.Bytes()); err != nil {
-		return nil, fmt.Errorf("lancego: uploading s3://%s/%s: %w", cfg.Storage.Bucket, key, err)
+	key := path.Join(cfg.StagingPrefix, t.def.Name, batchID, "part-0001.arrows")
+	if err := t.c.tr.putObject(ctx, cfg.Bucket, key, "application/vnd.apache.arrow.stream", buf.Bytes()); err != nil {
+		return nil, fmt.Errorf("lancego: uploading s3://%s/%s: %w", cfg.Bucket, key, err)
 	}
 	return &StagedBatch{
 		Table:   t.def.Name,
 		BatchID: batchID,
-		URIs:    []string{fmt.Sprintf("s3://%s/%s", cfg.Storage.Bucket, key)},
+		URIs:    []string{fmt.Sprintf("s3://%s/%s", cfg.Bucket, key)},
 		Rows:    len(rows),
 		Bytes:   size,
 	}, nil

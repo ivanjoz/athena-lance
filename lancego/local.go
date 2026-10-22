@@ -10,11 +10,12 @@ import (
 
 // cliTransport runs the service locally: each invocation executes the lance-cli binary
 // (service/src/bin/cli.rs), which handles the request against the real bucket and ledger
-// exactly like the Lambda would. Uploads still go to S3. Enabled by New when the
-// LANCEGO_CLI env var points at the binary; meant for development and tests.
+// exactly like the Lambda would. Uploads still go to S3. Enabled by Config.LocalCLI;
+// meant for development and tests.
 type cliTransport struct {
-	bin string
-	s3  transport // putObject only
+	bin  string
+	logs bool      // copy the service logs (stderr) to our stderr
+	s3   transport // putObject only
 }
 
 func (c *cliTransport) invoke(ctx context.Context, _ string, payload []byte, _ bool) ([]byte, error) {
@@ -22,7 +23,7 @@ func (c *cliTransport) invoke(ctx context.Context, _ string, payload []byte, _ b
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
-	if os.Getenv("LANCEGO_CLI_LOGS") != "" {
+	if c.logs {
 		os.Stderr.Write(stderr.Bytes())
 	}
 	if err != nil {

@@ -126,7 +126,7 @@ type compactRequest struct {
 	Op          string `json:"op"` // "compact"
 	Table       string `json:"table"`
 	OperationID string `json:"operation_id"`
-	MaxFileMB   int    `json:"max_file_mb,omitempty"` // 0 = service default (config compaction.max_file_mb)
+	MaxFileMB   int    `json:"max_file_mb,omitempty"` // 0 = service default
 	MaxFiles    int    `json:"max_files,omitempty"`   // 0 = service default
 	MaxTasks    int    `json:"max_tasks,omitempty"`   // 0 = service default
 }
@@ -298,7 +298,7 @@ type QueryResult struct {
 	Rows     json.RawMessage `json:"rows"`
 	RowCount int             `json:"row_count"`
 	// Truncated: the query had more rows than MaxRows, or they did not fit in the response
-	// size limit (config query.max_response_bytes). Add a LIMIT or aggregate more.
+	// service's response size limit. Add a LIMIT or aggregate more.
 	Truncated bool       `json:"truncated"`
 	Stats     QueryStats `json:"stats"`
 	Plan      string     `json:"plan,omitempty"` // explain only

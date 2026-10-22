@@ -249,3 +249,21 @@ skipped, and the ledger records hash + `parquet_id` + `records_updated` per part
   - Go `examples/sales -query -explain` through `LANCEGO_CLI`: aggregate decoded with `DecodeRows`,
     `SELECT *` decoded into `[]Venta` (nullable float, UTC timestamps), plan printed.
 - **Not yet deployed:** `smartberry-lance-query` does not exist yet; Lambda latency is unmeasured.
+
+## ADR-010: The Go library takes its configuration from the backend — 2026-10-22
+
+There are three actors: the **backend** (the application consuming this project), the **Go
+library** `lancego` (the bridge that stages files and invokes the functions) and the **Rust
+service** on Lambda. The configuration belongs to the backend, which keeps it wherever it wants.
+
+- `lancego` reads no files or environment variables. `LoadConfig`, the `$LANCE_CONFIG` lookup and
+  `LANCEGO_CLI` / `LANCEGO_CLI_LOGS` were removed from the library.
+- `lancego.Config` is a flat struct: `ControlFunction`, `IngestFunction`, `QueryFunction` and
+  `Bucket` are required; `Region` / `Profile` (used by `New`), `StagingPrefix`, `BatchRows`,
+  `MaxRowsPerRequest`, `WaitTimeout` have defaults; `LocalCLI` / `LocalCLILogs` replace the env
+  vars for development. `New` and `NewWithAWS` validate it and return an error naming every
+  missing field (`NewWithAWS` now returns `(*Client, error)`).
+- `config.toml` stays the configuration of the Rust service, the deploy scripts and the examples.
+  `examples/sales` plays the backend: it reads `config.toml` (and `LANCEGO_CLI`) itself and
+  builds the `Config`. The TOML parser remains in `go.mod` only because the example lives in the
+  same module; the `lancego` package does not import it.

@@ -14,7 +14,7 @@ Detalle de diseño y verificaciones: `docs/decisions.md` (ADR-001 … ADR-009).
   `<lambda-role>` (sin cambios de IAM).
 - El zip (56 MB) supera el límite de subida directa (50 MB): se despliega desde
   `s3://smartberry-artifacts/lance-lambda/function.zip`.
-- Todo valor de entorno vive en `config.toml`.
+- Todo valor de entorno del servicio y del despliegue vive en `config.toml` (la librería Go no lo lee).
 
 ### Restricciones de la cuenta y cómo se resolvieron
 - **Sin SQS** (no se pueden crear colas): Go invoca `smartberry-lance-ingest` de forma síncrona; la
@@ -48,7 +48,10 @@ Detalle de diseño y verificaciones: `docs/decisions.md` (ADR-001 … ADR-009).
 - `TableDef` + `NewTable[T]` con tags `lance:"col"` / `lance:"*"` (snake_case).
 - `Save` por partición con hash de 8 bytes (salta particiones sin cambios), `DeletePartitions`,
   `Partitions`, `Insert`, `Compact`, `TableInfo`, `ListTables`.
-- `LANCEGO_CLI=<ruta a lance-cli>` hace que el cliente ejecute el servicio en local en vez de Lambda.
+- La librería no lee archivos ni variables de entorno: el backend arma `lancego.Config` (funciones,
+  bucket, región, límites) desde su propia configuración y lo pasa a `New` / `NewWithAWS`.
+  `Config.LocalCLI=<ruta a lance-cli>` ejecuta el servicio en local en vez de Lambda; el ejemplo
+  `examples/sales` lo toma de `LANCEGO_CLI` y lee el `config.toml` del repo como lo haría un backend.
 
 ### Pruebas
 - Local con `lance-cli` contra el bucket y DynamoDB: Save de 6 particiones / 3000 filas en un commit;

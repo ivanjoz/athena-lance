@@ -1,8 +1,10 @@
 // Package lancego converts Go structs to Apache Arrow and sends them to the Lance
 // service (lance-control / lance-ingest / lance-query on AWS Lambda).
 //
-//	cfg, _ := lancego.LoadConfig("")
-//	c, _ := lancego.New(ctx, cfg)
+//	c, _ := lancego.New(ctx, lancego.Config{ // filled from the application's own configuration
+//		Region: "us-west-2", Bucket: "...--x-s3",
+//		ControlFunction: "...", IngestFunction: "...", QueryFunction: "...",
+//	})
 //	sales, _ := lancego.NewTable[Sale](c, lancego.TableDef{Name: "sales", PartitionKeys: []string{"fecha"}})
 //	sales.Create(ctx, lancego.CreateOptions{IfNotExists: true})
 //	sales.Save(ctx, rows, lancego.SaveOptions{}) // returns once the data is committed
@@ -15,7 +17,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -69,48 +70,48 @@ func (a *awsTransport) putObject(ctx context.Context, bucket, key, contentType s
 	return err
 }
 
-// New creates a client using the AWS profile and region from cfg.
+// New creates a client, loading AWS credentials for cfg.Region (and cfg.Profile, if set)
+// from the default credential chain.
 func New(ctx context.Context, cfg Config) (*Client, error) {
 	var opts []func(*awsconfig.LoadOptions) error
-	if cfg.AWS.Profile != "" {
-		opts = append(opts, awsconfig.WithSharedConfigProfile(cfg.AWS.Profile))
+	if cfg.Profile != "" {
+		opts = append(opts, awsconfig.WithSharedConfigProfile(cfg.Profile))
 	}
-	if cfg.AWS.Region != "" {
-		opts = append(opts, awsconfig.WithRegion(cfg.AWS.Region))
+	if cfg.Region != "" {
+		opts = append(opts, awsconfig.WithRegion(cfg.Region))
 	}
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("lancego: loading AWS config: %w", err)
 	}
-	c := NewWithAWS(cfg, awsCfg)
-	if bin := os.Getenv("LANCEGO_CLI"); bin != "" {
-		c.tr = &cliTransport{bin: bin, s3: c.tr}
-	}
-	return c, nil
+	return NewWithAWS(cfg, awsCfg)
 }
 
-// NewWithAWS creates a client from an already loaded AWS configuration.
-func NewWithAWS(cfg Config, awsCfg aws.Config) *Client {
-	return newClient(cfg, &awsTransport{
+// NewWithAWS creates a client from an AWS configuration the application already loaded
+// (cfg.Region and cfg.Profile are not used).
+func NewWithAWS(cfg Config, awsCfg aws.Config) (*Client, error) {
+	var tr transport = &awsTransport{
 		s3: s3.NewFromConfig(awsCfg),
 		// Writes run up to the function timeout (15 min) before answering.
 		lambda: lambda.NewFromConfig(awsCfg, func(o *lambda.Options) {
 			o.RetryMaxAttempts = 3
 		}),
-	})
+	}
+	if cfg.LocalCLI != "" {
+		tr = &cliTransport{bin: cfg.LocalCLI, logs: cfg.LocalCLILogs, s3: tr}
+	}
+	return newClient(cfg, tr)
 }
 
-func newClient(cfg Config, tr transport) *Client {
-	if cfg.Storage.StagingPrefix == "" {
-		cfg.Storage.StagingPrefix = "staging"
+func newClient(cfg Config, tr transport) (*Client, error) {
+	cfg, err := cfg.withDefaults()
+	if err != nil {
+		return nil, err
 	}
-	if cfg.Ingest.WaitTimeoutSeconds <= 0 {
-		cfg.Ingest.WaitTimeoutSeconds = 900
-	}
-	return &Client{cfg: cfg, tr: tr}
+	return &Client{cfg: cfg, tr: tr}, nil
 }
 
-// QueryOptions tune a query. Zero values use the service defaults (config [query]).
+// QueryOptions tune a query. Zero values use the service defaults.
 type QueryOptions struct {
 	MaxRows   int
 	TimeoutMS int
@@ -134,7 +135,7 @@ func (c *Client) Explain(ctx context.Context, sql string, opts QueryOptions) (*Q
 func (c *Client) query(ctx context.Context, op, sql string, opts QueryOptions) (*QueryResult, error) {
 	var out QueryResult
 	req := queryRequest{Op: op, SQL: sql, Format: "json", MaxRows: opts.MaxRows, TimeoutMS: opts.TimeoutMS, MinVersions: opts.MinVersions}
-	if err := c.invoke(ctx, c.cfg.Lambda.QueryFunction, req, &out); err != nil {
+	if err := c.invoke(ctx, c.cfg.QueryFunction, req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -143,7 +144,7 @@ func (c *Client) query(ctx context.Context, op, sql string, opts QueryOptions) (
 // DescribeTable returns the table descriptor (schema, spec, version, indexes) as JSON.
 func (c *Client) DescribeTable(ctx context.Context, table string) (json.RawMessage, error) {
 	var out json.RawMessage
-	err := c.invoke(ctx, c.cfg.Lambda.ControlFunction, tableRequest{Op: "describe_table", Table: table}, &out)
+	err := c.invoke(ctx, c.cfg.ControlFunction, tableRequest{Op: "describe_table", Table: table}, &out)
 	return out, err
 }
 
@@ -155,7 +156,7 @@ func (c *Client) DescribeTable(ctx context.Context, table string) (json.RawMessa
 func (c *Client) TableInfo(ctx context.Context, table string, detail bool) (*TableInfo, error) {
 	var out TableInfo
 	req := tableInfoRequest{Op: "table_info", Table: table, Detail: detail}
-	if err := c.invoke(ctx, c.cfg.Lambda.ControlFunction, req, &out); err != nil {
+	if err := c.invoke(ctx, c.cfg.ControlFunction, req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -168,7 +169,7 @@ func (c *Client) ListTables(ctx context.Context) ([]string, error) {
 			Table string `json:"table"`
 		} `json:"tables"`
 	}
-	if err := c.invoke(ctx, c.cfg.Lambda.ControlFunction, map[string]string{"op": "list_tables"}, &out); err != nil {
+	if err := c.invoke(ctx, c.cfg.ControlFunction, map[string]string{"op": "list_tables"}, &out); err != nil {
 		return nil, err
 	}
 	names := make([]string, len(out.Tables))
@@ -186,7 +187,7 @@ func (c *Client) ListTables(ctx context.Context) ([]string, error) {
 // the same request: the service applies a batch/operation ID once, and a retry of a batch
 // that did commit just finishes its bookkeeping and returns it.
 func (c *Client) write(ctx context.Context, req, out any, async bool) error {
-	fn := c.cfg.Lambda.IngestFunction
+	fn := c.cfg.IngestFunction
 	if async {
 		payload, err := json.Marshal(req)
 		if err != nil {

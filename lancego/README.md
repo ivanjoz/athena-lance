@@ -26,8 +26,7 @@ var VentasDef = lancego.TableDef{
 	SortKey:       []string{"region", "sold_at"},     // like IcebergSortOrder
 }
 
-cfg, _ := lancego.LoadConfig("")               // repo config.toml (or $LANCE_CONFIG)
-client, _ := lancego.New(ctx, cfg)
+client, _ := lancego.New(ctx, lancego.Config{...}) // see Configuration
 ventas, _ := lancego.NewTable[Venta](client, VentasDef)
 
 ventas.Create(ctx, lancego.CreateOptions{IfNotExists: true})
@@ -38,6 +37,38 @@ found, _, _ := ventas.Query(ctx, "SELECT * FROM ventas WHERE customer_id = 'C000
 	lancego.QueryOptions{MinVersions: map[string]int64{"ventas": res.Version()}}) // []Venta
 ```
 
+## Configuration
+
+The application (the backend using this library) fills `lancego.Config` from its own settings,
+wherever it keeps them; the library reads no files or environment variables.
+
+```go
+client, err := lancego.New(ctx, lancego.Config{
+	Region:          "us-west-2",
+	Bucket:          "smartberry-lance-data--usw2-az1--x-s3",
+	ControlFunction: "smartberry-lance-control",
+	IngestFunction:  "smartberry-lance-ingest",
+	QueryFunction:   "smartberry-lance-query",
+})
+// or, with an aws.Config the application already loaded:
+client, err := lancego.NewWithAWS(cfg, awsCfg)
+```
+
+| Field | Required | Default / meaning |
+|---|---|---|
+| `ControlFunction`, `IngestFunction`, `QueryFunction` | yes | Lambda names or ARNs |
+| `Bucket` | yes | S3 Express bucket of the service (write batches are staged there) |
+| `Region`, `Profile` | no | used by `New` to load credentials; empty profile = default chain (role) |
+| `StagingPrefix` | no | `staging` |
+| `BatchRows` | no | 65536 rows per Arrow record batch in uploaded files |
+| `MaxRowsPerRequest` | no | 1,000,000 rows per write request (one commit) |
+| `WaitTimeout` | no | 15 min, for `Wait` when ctx has no deadline |
+| `LocalCLI`, `LocalCLILogs` | no | development: run requests through a local `lance-cli` instead of Lambda |
+
+`New` / `NewWithAWS` return an error naming every missing required field. The repo's
+`config.toml` is the service's and the deploy scripts' configuration; `examples/sales` reads it
+(as a backend would read its own) and builds the `Config` (`examples/sales/config.go`).
+
 ## Query
 
 `client.Query(ctx, sql, opts)` runs read-only SQL (DataFusion) on `lambda.query_function`; any
@@ -46,10 +77,10 @@ table of the service can be named, including tables created after the function s
 - `Table[T].Query` decodes the rows into `[]T` by lance column name; `DecodeRows[R](res)` does the
   same for any struct with lance tags (aggregates: ``Total float64 `lance:"total"` ``).
   `res.Rows` is the raw JSON array (nulls explicit, timestamps RFC 3339, binary as hex).
-- `MaxRows` (default `query.default_max_rows`, cap `query.max_rows_limit`) and the response size
-  limit (`query.max_response_bytes`) cut the result; `res.Truncated` says so.
+- `MaxRows` (service default `query.default_max_rows`, cap `query.max_rows_limit`) and the
+  service's response size limit (`query.max_response_bytes`) cut the result; `res.Truncated` says so.
 - Freshness: the service caches each table and checks for a newer version every
-  `query.freshness_seconds`. To read your own write, pass `MinVersions{table: res.Version()}`
+  `query.freshness_seconds` (service setting). To read your own write, pass `MinVersions{table: res.Version()}`
   from `Save`: that table is refreshed first (or `VERSION_NOT_AVAILABLE`).
 - `res.Stats`: elapsed / plan / exec ms, bytes read and GET requests, cold start, and the version
   of each table read. `client.Explain(ctx, sql, opts)` runs it with `EXPLAIN ANALYZE` into
@@ -68,7 +99,7 @@ table of the service can be named, including tables created after the function s
 3. Reads the partition registry and skips partitions whose hash didn't change (`Force` sends all).
 4. Sends the rest as `replace_partitions`: every old row of those partitions is deleted and the new
    ones inserted **in one atomic Lance commit**. A request carries up to
-   `ingest.max_rows_per_request` rows and never splits a partition.
+   `Config.MaxRowsPerRequest` rows and never splits a partition.
 5. Returns when the service confirms each batch (`committed`, with the Lance version and unix time)
    or rejects it (`ErrBatchFailed`, wrapping the `*APIError`). `NoWait` sends asynchronous
    invocations instead; `Wait(batchID)` waits later.
@@ -124,11 +155,11 @@ Maps, interfaces, channels, funcs and complex numbers are rejected.
 1. `Create`: the schema is sent as a base64 schema-only Arrow IPC stream, plus sort key,
    indexes and compression hints from the tags.
 2. Partitioned tables: `Save` (above). Append-only tables (no `PartitionKeys`): `Insert` = `Stage` + `Ingest`:
-   - `Stage` encodes rows as an Arrow IPC stream (Zstd buffers, `ingest.batch_rows` rows per
-     batch) and uploads it to `s3://<bucket>/<staging_prefix>/<table>/<batch_id>/part-0001.arrows`.
-   - `Ingest` invokes `lambda.ingest_function` synchronously and returns the committed batch.
+   - `Stage` encodes rows as an Arrow IPC stream (Zstd buffers, `Config.BatchRows` rows per
+     batch) and uploads it to `s3://<Bucket>/<StagingPrefix>/<table>/<batch_id>/part-0001.arrows`.
+   - `Ingest` invokes `Config.IngestFunction` synchronously and returns the committed batch.
    - Re-sending the same `BatchID` is safe (idempotent on the service).
-3. Writes go to `lambda.ingest_function` as synchronous invocations; the response comes after the
+3. Writes go to `Config.IngestFunction` as synchronous invocations; the response comes after the
    commit, so a nil error means the data is visible. The service runs one write per table at a
    time with a lease lock in the bucket (`locks/<table>.json`); a write that finds the table busy
    waits up to `service.lock_wait_seconds`, then fails with `TABLE_BUSY`. Writes whose outcome is

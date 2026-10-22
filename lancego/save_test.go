@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -156,15 +157,41 @@ var ventasDef = TableDef{Name: "ventas", PartitionKeys: []string{"filial_id", "f
 func testTable(t *testing.T) (*Table[Venta], *fakeService) {
 	t.Helper()
 	fake := newFake()
-	cfg := Config{}
-	cfg.Storage.Bucket = "bucket--usw2-az1--x-s3"
-	cfg.Lambda.ControlFunction = "lance-control"
-	cfg.Lambda.IngestFunction = "lance-ingest"
-	tbl, err := NewTable[Venta](newClient(cfg, fake), ventasDef)
+	tbl, err := NewTable[Venta](testClient(t, fake), ventasDef)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return tbl, fake
+}
+
+var testConfig = Config{
+	Bucket:          "bucket--usw2-az1--x-s3",
+	ControlFunction: "lance-control",
+	IngestFunction:  "lance-ingest",
+	QueryFunction:   "lance-query",
+}
+
+func testClient(t *testing.T, tr transport) *Client {
+	t.Helper()
+	c, err := newClient(testConfig, tr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func TestConfigRequiredAndDefaults(t *testing.T) {
+	_, err := newClient(Config{ControlFunction: "c"}, newFake())
+	for _, field := range []string{"IngestFunction", "QueryFunction", "Bucket"} {
+		if err == nil || !strings.Contains(err.Error(), "Config."+field+" is required") {
+			t.Errorf("missing %s not reported: %v", field, err)
+		}
+	}
+	c := testClient(t, newFake())
+	if c.cfg.StagingPrefix != DefaultStagingPrefix || c.cfg.BatchRows != DefaultBatchRows ||
+		c.cfg.MaxRowsPerRequest != DefaultMaxRowsPerRequest || c.cfg.WaitTimeout != DefaultWaitTimeout {
+		t.Errorf("defaults not applied: %+v", c.cfg)
+	}
 }
 
 func ventas() []Venta {
@@ -310,7 +337,7 @@ func TestTableDefValidation(t *testing.T) {
 		A *int32 `lance:"a"`
 		B int32  `lance:"b"`
 	}
-	c := newClient(Config{}, newFake())
+	c := testClient(t, newFake())
 	if _, err := NewTable[Venta](c, TableDef{Name: "v", PartitionKeys: []string{"nope"}}); err == nil {
 		t.Error("unknown partition key should fail")
 	}
