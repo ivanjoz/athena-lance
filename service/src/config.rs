@@ -103,7 +103,12 @@ impl Config {
                 cwd.ancestors()
                     .map(|d| d.join("config.toml"))
                     .find(|p| p.is_file())
-                    .ok_or_else(|| anyhow!("config.toml not found above {} (set LANCE_CONFIG)", cwd.display()))?
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "config.toml not found above {} (copy config.example.toml to config.toml, or set LANCE_CONFIG)",
+                            cwd.display()
+                        )
+                    })?
             }
         };
         let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;

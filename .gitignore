@@ -2,5 +2,8 @@ target/
 *.zip
 # Local secrets (the Trino API key); config.toml only holds its hash.
 .secrets/
+# Environment configuration (account, buckets, functions, URL, credential hash): local only.
+# config.example.toml is the template.
+config.toml
 # stale lockfile from before the workspace (the root Cargo.lock is the one used)
 spikes/spike-a/Cargo.lock

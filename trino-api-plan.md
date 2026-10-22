@@ -184,7 +184,8 @@ The URL is public (auth type `NONE`: Trino drivers can't sign SigV4), so the ser
   password is the API key. It can run read-only SQL on every table and nothing else. JDBC only
   sends a password over TLS (`SSL=true`); the Function URL is HTTPS on 443.
 - **In `config.toml`, as a hash:** `[trino] user` and `password_sha256` (hex SHA-256 of the key).
-  `config.toml` is in git and inside the Lambda zip, so it never holds the key itself. Because the
+  `config.toml` goes inside the Lambda zip (and is gitignored, `config.example.toml` is the
+  template), so it never holds the key itself. Because the
   key is random (32 bytes, base64url, generated once with `openssl rand -base64 32` or
   `lance-cli trino-key`), plain SHA-256 is enough: there is nothing to brute-force by dictionary,
   so no salt or slow hash is needed. The key is handed to Tableau users out of band.
