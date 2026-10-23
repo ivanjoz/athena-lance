@@ -21,7 +21,7 @@ object_store = "0.14"
 lto = "thin"
 strip = true
 
-# Deploy builds (cargo lambda build --profile lambda): plan §8.1.
+# Release-grade builds (fat LTO): plan §8.1. deploy/deploy.sh uses lambda-dev.
 [profile.lambda]
 inherits = "release"
 lto = "fat"

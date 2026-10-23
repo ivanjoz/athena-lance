@@ -5,6 +5,8 @@
 #   deploy/deploy.sh            build + deploy the two functions
 #   deploy/deploy.sh --no-build deploy the last build
 set -euo pipefail
+# The cross-link to arm64 (zig) opens more files than the default limit allows.
+ulimit -n 65536
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cfg="$root/config.toml"
@@ -17,7 +19,9 @@ role="$(toml lambda.role_arn)"
 out="$root/target/lambda-deploy"
 
 if [[ "${1:-}" != "--no-build" ]]; then
-  (cd "$root" && cargo lambda build --profile lambda --arm64 -p lance-service --bin bootstrap)
+  # lambda-dev: thin LTO + parallel codegen + incremental. The "lambda" profile (fat LTO, one
+  # codegen unit) links on a single core for 20+ minutes and needs more RAM than a dev machine has.
+  (cd "$root" && cargo lambda build --profile lambda-dev --arm64 -p lance-service --bin bootstrap)
 fi
 bin="$root/target/lambda/bootstrap/bootstrap"
 [[ -x "$bin" ]] || { echo "missing $bin" >&2; exit 1; }
