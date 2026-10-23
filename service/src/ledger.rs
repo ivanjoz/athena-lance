@@ -201,7 +201,7 @@ impl Ledger {
         self.batch_write(requests).await
     }
 
-    /// Removes every partition record of a table (create_table with replace).
+    /// Removes every partition record of a table (drop_table).
     pub async fn delete_partitions(&self, table: &str) -> Result<()> {
         let mut requests = Vec::new();
         for p in self.list_partitions(table).await? {

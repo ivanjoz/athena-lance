@@ -70,6 +70,9 @@ locks_prefix = "locks"
 lock_lease_seconds = 120
 # How long a write waits for another writer of the same table before failing with TABLE_BUSY.
 lock_wait_seconds = 300
+# The same wait for create_table and drop_table, which run on the control function:
+# it must end before that function's timeout (120 s) so the caller gets TABLE_BUSY.
+control_lock_wait_seconds = 60
 # Old table versions are kept this long (readers mid-query, time travel), then cleaned up.
 version_retention_hours = 24
 # Batch records in the ledger expire after this many days (DynamoDB TTL).
@@ -134,6 +137,9 @@ max_files = 20
 # Max groups rewritten per invocation, so one run fits in the Lambda timeout;
 # call again until the result reports no remaining work.
 max_tasks = 10
+# BITMAP and BTREE indexes get one delta segment per write (only the new files); past this many
+# segments the write merges them back into one. ZONEMAP indexes always stay in one segment.
+max_index_segments = 32
 
 [spikes.a]
 # Prefix inside the bucket for Spike A runs: s3://<bucket>/<prefix>/run-<ts>/

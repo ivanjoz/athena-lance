@@ -65,9 +65,19 @@ impl App {
     }
 
     pub async fn lock(&self, table: &str, owner: &str, op: &str) -> Result<TableLock> {
+        self.lock_waiting(table, owner, op, self.cfg.service.lock_wait_seconds).await
+    }
+
+    /// The table lock for create_table and drop_table (control function), which waits less
+    /// (`control_lock_wait_seconds`) so it gives up before that function's timeout.
+    pub async fn lock_control(&self, table: &str, op: &str) -> Result<TableLock> {
+        self.lock_waiting(table, op, op, self.cfg.service.control_lock_wait_seconds).await
+    }
+
+    async fn lock_waiting(&self, table: &str, owner: &str, op: &str, wait_seconds: u64) -> Result<TableLock> {
         let settings = LockSettings {
             lease: Duration::from_secs(self.cfg.service.lock_lease_seconds),
-            wait: Duration::from_secs(self.cfg.service.lock_wait_seconds),
+            wait: Duration::from_secs(wait_seconds),
         };
         TableLock::acquire(self.store.clone(), self.lock_path(table), owner, op, &settings).await
     }

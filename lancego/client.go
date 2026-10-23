@@ -169,6 +169,18 @@ func (c *Client) DescribeTable(ctx context.Context, table string) (json.RawMessa
 	return out, err
 }
 
+// DropTable deletes a table: every data file and version, its schema and its partition
+// registry. It can't be undone. This is the only call that deletes a table; Create never
+// overwrites one and UpdateSchema only drops columns. Fails with TABLE_NOT_FOUND if there
+// is nothing to delete; if it fails halfway, calling it again deletes what is left.
+func (c *Client) DropTable(ctx context.Context, table string) (*DropTableResult, error) {
+	var out DropTableResult
+	if err := c.invoke(ctx, c.cfg.ControlFunction, tableRequest{Op: "drop_table", Table: table}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // TableInfo returns the status of a table: version, rows, files and their sizes, unused
 // files and versions awaiting cleanup, index coverage, what a compaction would merge,
 // the partition registry summary, the table lock and recent / pending / failed operations.

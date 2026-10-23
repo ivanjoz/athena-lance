@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use crate::app::App;
 use crate::error::{Error, Result, code};
-use crate::ops::{compact, control, query, write};
+use crate::ops::{compact, control, query, schema, write};
 use crate::protocol::{Request, TableInfoReq};
 
 pub async fn handle(app: &App, request_id: &str, payload: Value) -> Value {
@@ -62,6 +62,9 @@ fn to_value<T: Serialize>(v: T) -> Result<Value> {
 async fn dispatch(app: &App, req: Request) -> Result<Value> {
     match req {
         Request::CreateTable(r) => to_value(control::create_table(app, r).await?),
+        Request::UpdateSchema(r) => to_value(schema::update_schema(app, r, false).await?),
+        Request::CreateOrUpdate(r) => to_value(schema::update_schema(app, r, true).await?),
+        Request::DropTable(r) => to_value(schema::drop_table(app, r).await?),
         Request::DescribeTable(r) => to_value(control::table_info(app, TableInfoReq { table: r.table, detail: false }).await?),
         Request::TableInfo(r) => to_value(control::table_info(app, r).await?),
         Request::ListTables(_) => to_value(json!({ "tables": control::list_tables(app).await? })),

@@ -91,11 +91,14 @@ async fn write_locked(
     table: &str,
     batch_id: &str,
     op: &str,
-    ds: Dataset,
+    mut ds: Dataset,
     source: Option<Source>,
     partitions: Option<Vec<PartitionWrite>>,
     lock: &crate::lock::TableLock,
 ) -> Result<WriteResult> {
+    // Opened before waiting for the lock: an update_schema may have committed meanwhile, and the
+    // staged files are checked against the schema of this version.
+    ds.checkout_latest().await?;
     let parts = partitions.clone().unwrap_or_default();
     let mut record = BatchRecord {
         batch_id: batch_id.into(),
@@ -273,7 +276,7 @@ async fn apply(
     let mut ds = CommitBuilder::new(ds).execute(txn).await?;
     let data_version = ds.version().version;
 
-    ensure_indexes(&mut ds, &spec).await?;
+    ensure_indexes(&mut ds, &spec, app.cfg.compaction.max_index_segments).await?;
     Ok(Applied { data_version, version: ds.version().version, rows, rows_deleted })
 }
 
@@ -293,8 +296,10 @@ async fn read_source(app: &App, src: &Source, schema: &SchemaRef) -> Result<Opti
         }
         for b in reader {
             let b = b.map_err(|e| Error::api(code::BAD_REQUEST, format!("{uri}: {e}")))?;
-            // Same names and types; rebuild with the table schema so field metadata matches.
-            batches.push(RecordBatch::try_new(schema.clone(), b.columns().to_vec())?);
+            // Same names and types, maybe in another order (update_schema appends new columns
+            // at the end): take them by name, with the table schema so field metadata matches.
+            let columns = schema.fields().iter().map(|f| b.column_by_name(f.name()).expect("checked by schema_diff").clone());
+            batches.push(RecordBatch::try_new(schema.clone(), columns.collect())?);
         }
     }
     if batches.is_empty() {
@@ -496,30 +501,76 @@ fn partitions_expr(spec: &TableSpec, schema: &Schema, parts: &[PartitionWrite]) 
 }
 
 /// Builds the spec's indexes that don't exist yet (once the table has rows) and refreshes
-/// existing ones so new fragments are covered. Each step is its own commit.
-pub async fn ensure_indexes(ds: &mut Dataset, spec: &TableSpec) -> Result<()> {
+/// existing ones so new fragments are covered. Each step is its own commit. Returns the names of
+/// the indexes built.
+///
+/// The refresh depends on the index type (docs/escrituras-concurrentes-y-costo-de-indices.md):
+/// - ZONEMAP keeps the single segment: Lance's update reuses the old zones and trains only the
+///   new rows (lance-index zonemap.rs `update`), so it costs what was written. Merging two zone
+///   map segments instead rescans the whole column (lance append.rs `can_merge_segments`).
+/// - BITMAP and BTREE get a delta segment covering only the new fragments. Their update rewrites
+///   the whole index, so the default refresh made every write cost the size of the table. An
+///   index whose segments pass `max_segments` is merged back into one, because every query opens
+///   all of them; that merge is the only write that pays for the whole column.
+pub async fn ensure_indexes(ds: &mut Dataset, spec: &TableSpec, max_segments: usize) -> Result<Vec<String>> {
+    let mut built = Vec::new();
     if spec.indexes.is_empty() {
-        return Ok(());
+        return Ok(built);
     }
-    let existing: HashSet<String> = ds.load_indices().await?.iter().map(|i| i.name.clone()).collect();
-    let mut refresh = false;
+    let existing: HashSet<String> = segments_by_index(ds).await?.into_keys().collect();
+    let mut refresh_in_place = Vec::new();
+    let mut refresh_by_delta = Vec::new();
     let has_rows = ds.count_rows(None).await? > 0;
     for ix in &spec.indexes {
         let name = ix.resolved_name();
         if existing.contains(&name) {
-            refresh = true;
+            if ix.index_type.eq_ignore_ascii_case("ZONEMAP") {
+                refresh_in_place.push(name);
+            } else {
+                refresh_by_delta.push(name);
+            }
             continue;
         }
         if !has_rows {
             continue; // built after the first write
         }
         let index_type = ix.lance_type().expect("validated index type");
-        ds.create_index(&[ix.column.as_str()], index_type, Some(name), &ScalarIndexParams::new(ix.plugin_name()), false)
+        ds.create_index(&[ix.column.as_str()], index_type, Some(name.clone()), &ScalarIndexParams::new(ix.plugin_name()), false)
             .await?;
+        built.push(name);
     }
-    if refresh {
-        ds.optimize_indices(&OptimizeOptions::default()).await?;
+    if !refresh_in_place.is_empty() {
+        ds.optimize_indices(&OptimizeOptions::merge(1).index_names(refresh_in_place)).await?;
     }
+    if !refresh_by_delta.is_empty() {
+        ds.optimize_indices(&OptimizeOptions::append().index_names(refresh_by_delta.clone())).await?;
+        let to_merge: Vec<String> = segments_by_index(ds)
+            .await?
+            .into_iter()
+            .filter(|(name, n)| refresh_by_delta.contains(name) && *n > max_segments.max(1))
+            .map(|(name, _)| name)
+            .collect();
+        if !to_merge.is_empty() {
+            merge_index_segments(ds, to_merge).await?;
+        }
+    }
+    Ok(built)
+}
+
+/// How many segments each index has (an index name appears once per segment).
+pub async fn segments_by_index(ds: &Dataset) -> Result<HashMap<String, usize>> {
+    let mut counts = HashMap::new();
+    for ix in ds.load_indices().await?.iter() {
+        *counts.entry(ix.name.clone()).or_insert(0) += 1;
+    }
+    Ok(counts)
+}
+
+/// Merges every segment of the given indexes into one. Costs a pass over each column, so it runs
+/// only when segments pile up (`ensure_indexes`).
+pub async fn merge_index_segments(ds: &mut Dataset, names: Vec<String>) -> Result<()> {
+    let options = OptimizeOptions::merge(usize::MAX).index_names(names);
+    ds.optimize_indices(&options).await?;
     Ok(())
 }
 
@@ -581,5 +632,58 @@ mod tests {
         let parts = split_by_partition(&b, &keys).unwrap();
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].num_rows(), 2);
+    }
+
+    #[tokio::test]
+    async fn zonemaps_stay_one_segment_and_bitmaps_merge_past_the_limit() {
+        use crate::spec::IndexSpec;
+        use arrow::array::RecordBatchIterator;
+        use lance::index::DatasetIndexInternalExt;
+        use std::collections::BTreeMap;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("filial_id", DataType::Int32, false),
+            Field::new("productor_id", DataType::Int32, false),
+        ]));
+        let rows = |filial: i32| {
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int32Array::from(vec![filial; 100])), Arc::new(Int32Array::from_iter_values(0..100))],
+            )
+            .unwrap();
+            RecordBatchIterator::new(vec![Ok(batch)], schema.clone())
+        };
+        let spec = TableSpec {
+            spec_version: 0,
+            partition_keys: vec!["filial_id".into()],
+            sort_key: vec![],
+            indexes: vec![
+                IndexSpec { column: "filial_id".into(), index_type: "ZONEMAP".into(), name: Some("filial_id_zonemap".into()) },
+                IndexSpec { column: "productor_id".into(), index_type: "BITMAP".into(), name: Some("productor_id_bitmap".into()) },
+            ],
+            storage_version: String::new(),
+            field_compression: BTreeMap::new(),
+        };
+        let dir = std::env::temp_dir().join(format!("lance-write-test-{}", uuid::Uuid::new_v4()));
+        let uri = dir.to_str().unwrap().to_string();
+        let mut ds = Dataset::write(rows(1), &uri, None).await.unwrap();
+        ensure_indexes(&mut ds, &spec, 3).await.unwrap();
+
+        let append = WriteParams { mode: WriteMode::Append, ..Default::default() };
+        let mut counts = Vec::new();
+        for filial in 2..=5 {
+            ds = Dataset::write(rows(filial), &uri, Some(append.clone())).await.unwrap();
+            ensure_indexes(&mut ds, &spec, 3).await.unwrap();
+            let segments = segments_by_index(&ds).await.unwrap();
+            counts.push((segments["filial_id_zonemap"], segments["productor_id_bitmap"]));
+        }
+        // The bitmap gains a delta segment per write until it passes 3, then is merged back.
+        assert_eq!(counts, [(1, 2), (1, 3), (1, 1), (1, 2)]);
+        // Every row is still found through the indexes.
+        assert_eq!(ds.count_rows(Some("filial_id = 4".into())).await.unwrap(), 100);
+        assert_eq!(ds.count_rows(Some("productor_id = 7".into())).await.unwrap(), 5);
+        assert_eq!(ds.unindexed_fragments("filial_id_zonemap").await.unwrap().len(), 0);
+        assert_eq!(ds.unindexed_fragments("productor_id_bitmap").await.unwrap().len(), 0);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

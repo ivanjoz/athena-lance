@@ -80,19 +80,26 @@ impl QueryEngine {
             Some(c) if c.checked.elapsed() < max_age && min_version.is_none_or(|v| c.ds.version().version >= v) => {
                 return Ok(c.ds);
             }
-            Some(c) => {
-                if c.ds.latest_version_id().await? == c.ds.version().version {
-                    c.ds
-                } else {
-                    let mut ds = (*c.ds).clone();
-                    ds.checkout_latest().await?;
-                    Arc::new(ds)
+            // The ETag and not only the version number: a table dropped and created again can
+            // reach the cached version number with other data.
+            Some(c) => match c.ds.latest_manifest().await {
+                Ok((_, latest)) => {
+                    let current = c.ds.manifest_location();
+                    if latest.version == current.version && latest.e_tag.is_some() && latest.e_tag == current.e_tag {
+                        c.ds
+                    } else {
+                        let mut ds = (*c.ds).clone();
+                        ds.checkout_latest().await?;
+                        Arc::new(ds)
+                    }
                 }
-            }
-            None => {
-                let params = ObjectStoreParams { object_store_wrapper: Some(self.io_wrapper.clone()), ..Default::default() };
-                Arc::new(app.open_with(table, Some(params)).await?)
-            }
+                // Dropped: opening it again reports TABLE_NOT_FOUND.
+                Err(_) => {
+                    self.forget(table);
+                    Arc::new(self.open(app, table).await?)
+                }
+            },
+            None => Arc::new(self.open(app, table).await?),
         };
         let version = ds.version().version;
         self.datasets.lock().unwrap().insert(table.to_string(), Cached { ds: ds.clone(), checked: Instant::now() });
@@ -105,6 +112,16 @@ impl QueryEngine {
             ));
         }
         Ok(ds)
+    }
+
+    async fn open(&self, app: &App, table: &str) -> Result<Dataset> {
+        let params = ObjectStoreParams { object_store_wrapper: Some(self.io_wrapper.clone()), ..Default::default() };
+        app.open_with(table, Some(params)).await
+    }
+
+    /// Drops the cached dataset of a table (drop_table, in this container).
+    pub(crate) fn forget(&self, table: &str) {
+        self.datasets.lock().unwrap().remove(table);
     }
 }
 

@@ -301,7 +301,7 @@ Plan and measurements: `docs/plan-archivo-por-particion.md`. **Not compiled or d
   `ensure_indexes` builds it on the first write and refreshes it on every write.
 - **Compaction:** partitioned tables are never merged (it would mix partitions); `compact` only cleans up
   old versions for them and `table_info` no longer recommends it.
-- **Replace:** `create_table` with `replace: true` overwrites an existing table with an empty version
+- **Replace** (removed by ADR-015: `update_schema` and `drop_table`): `create_table` with `replace: true` overwrites an existing table with an empty version
   (`WriteMode::Overwrite`, which also drops its indexes) and deletes its partition registry. Overwrite
   rather than deleting the prefix keeps versions increasing, so the query engine's dataset cache never
   sees an old version number with new data. `lancego.CreateOptions.Replace`.
@@ -349,4 +349,56 @@ Plan and measurements: `docs/plan-archivo-por-particion.md`. **Not compiled or d
   to Lance.
 - **Errors:** the API answers its own errors (bad key, bad body) as envelopes, so the client decodes
   them like any service error.
+
+## ADR-015: Schema changes in place; dropping a table is its own op — 2026-10-22
+
+Deployed 2026-10-23 (lancego v0.1.3). Replaces the Replace option of ADR-012.
+
+- **Problem:** a new or removed struct field made every write fail with `SCHEMA_MISMATCH`, and the
+  only way out was `create_table` with `replace`, which emptied the table. Changing the schema must
+  never delete the data; deleting a table must be an explicit call.
+- **`update_schema` / `create_or_update`** (same body as `create_table`; `ops/schema.rs`): compares
+  columns by name. New column → `add_columns` with `AllNulls` (metadata only; nullable in the table
+  because the existing rows have none). Missing column → `drop_columns` (metadata only). Not null →
+  nullable → `alter_columns`. Type change, or a change of compression of an existing column →
+  `SCHEMA_MISMATCH`; partition keys, sort key, storage version → `TABLE_EXISTS_SPEC_MISMATCH`;
+  nothing is committed in either case. Indexes follow the spec (dropped / built). Each step is its
+  own commit under the table lock; the plan is computed from the table each time, so calling again
+  after a failure converges. Runs on the ingest function (index builds read the whole table).
+- **Column order no longer matters:** `schema_diff` ignores it and writes take the staged columns by
+  name (`add_columns` appends at the end, the struct may have the field anywhere).
+- **Writes and compaction re-read the latest version after taking the lock** (they open the table
+  before waiting for it), so they validate against a schema changed meanwhile.
+- **`drop_table`** (`Client.DropTable`): deletes every object under `tables/<name>.lance/`, the
+  manifests (`_versions/`) first so readers stop seeing the table even if the rest fails (calling
+  again deletes what is left), then the partition registry. `create_table` never overwrites;
+  `replace` is gone.
+- **Recreated tables:** versions start again at 1, so the query engine's dataset cache compares the
+  latest manifest's ETag and not only its version number (Lance does the same in `checkout_latest`).
+  Cached query results of a dropped table can still be served until they expire (`CacheSeconds`).
+
+## ADR-016: Index refresh by type; create_table does not wait for writers — 2026-10-23
+
+Analysis and measurements: `docs/escrituras-concurrentes-y-costo-de-indices.md`. Deployed 2026-10-23 (lancego v0.1.3).
+
+- **Problem:** `ensure_indexes` refreshed with `OptimizeOptions::default()`, which merges the single
+  segment of each index with the new data. For BITMAP and BTREE that rewrites the whole index, so every
+  write cost the size of the table (smartberry monitoreos: p50 1.9 s → 63 s during the bulk copy, OOM
+  and timeouts on lance-ingest). And `create_table` if_not_exists waited for the table lock (300 s)
+  on the control function (120 s timeout), which timed out behind any long write.
+- **ZONEMAP:** refreshed in place (`OptimizeOptions::merge(1)`). Lance's zone map `update` keeps the
+  old zones and trains only the new rows, so the cost is what was written. Two zone map segments are
+  never left behind: merging them rescans the whole column (`can_merge_segments` in lance
+  `index/append.rs`). With one file per partition (ADR-012) the zones of a partition key are exact,
+  so a ZONEMAP declared on a partition key replaces the automatic BITMAP (`spec::validate`).
+- **BITMAP / BTREE:** refreshed by append (`OptimizeOptions::append()`): one delta segment covering only
+  the new fragments. Past `compaction.max_index_segments` (default 32) segments, the same write merges
+  them into one (`merge_index_segments`), which is the only write that pays for the whole column.
+- **`compact`** also builds spec indexes not built yet (`indexes_built`).
+- **`create_table` if_not_exists** answers without the lock when the table exists with the same spec
+  and schema (reading a version is safe during a commit); a mismatch or a missing table takes the
+  lock. `create_table` and `drop_table` wait `service.control_lock_wait_seconds` (default 60) so they
+  answer TABLE_BUSY before the control function's timeout.
+- **Cost accepted:** deleted fragments leave stale zones in a zone map (filtered out against the live
+  fragments at query time) until the index is retrained.
 

@@ -10,7 +10,7 @@ import (
 // produce exactly these shapes.
 
 type createTableRequest struct {
-	Op               string            `json:"op"` // "create_table"
+	Op               string            `json:"op"` // "create_table" | "update_schema" | "create_or_update"
 	Table            string            `json:"table"`
 	SchemaIPCB64     string            `json:"schema_ipc_b64"`
 	PartitionKeys    []string          `json:"partition_keys,omitempty"`
@@ -18,12 +18,11 @@ type createTableRequest struct {
 	Indexes          []IndexSpec       `json:"indexes,omitempty"`
 	StorageVersion   string            `json:"storage_version,omitempty"`
 	FieldCompression map[string]string `json:"field_compression,omitempty"`
-	IfNotExists      bool              `json:"if_not_exists"`
-	Replace          bool              `json:"replace,omitempty"`
+	IfNotExists      bool              `json:"if_not_exists"` // create_table only
 }
 
 type tableRequest struct {
-	Op    string `json:"op"` // "describe_table" | "list_partitions"
+	Op    string `json:"op"` // "describe_table" | "list_partitions" | "drop_table"
 	Table string `json:"table"`
 }
 
@@ -147,7 +146,10 @@ type CompactResult struct {
 	FilesRemoved     int   `json:"files_removed"`
 	FilesAdded       int   `json:"files_added"`
 	More             bool  `json:"more"` // more groups were eligible than MaxTasks: run again
-	Cleanup          struct {
+	// Spec indexes this call built (ones not built yet, e.g. after an UpdateSchema that failed
+	// mid-way).
+	IndexesBuilt []string `json:"indexes_built"`
+	Cleanup      struct {
 		OldVersionsRemoved int64 `json:"old_versions_removed"`
 		BytesRemoved       int64 `json:"bytes_removed"`
 	} `json:"cleanup"`
@@ -276,6 +278,23 @@ func (e *APIError) Error() string {
 type CreateTableResult struct {
 	Created bool            `json:"created"`
 	Table   json.RawMessage `json:"table"` // table descriptor, as in describe_table
+}
+
+// UpdateSchemaResult is the update_schema / create_or_update response.
+type UpdateSchemaResult struct {
+	Created        bool            `json:"created"` // CreateOrUpdate created the table
+	Changed        bool            `json:"changed"` // something was committed
+	Added          []string        `json:"added"`   // new columns, null in the existing rows
+	Dropped        []string        `json:"dropped"`
+	MadeNullable   []string        `json:"made_nullable"`
+	IndexesDropped []string        `json:"indexes_dropped"`
+	Table          json.RawMessage `json:"table"` // table descriptor, as in describe_table
+}
+
+// DropTableResult is the drop_table response.
+type DropTableResult struct {
+	Table        string `json:"table"`
+	FilesDeleted int    `json:"files_deleted"`
 }
 
 // QueryStats are the per-query statistics the service reports.

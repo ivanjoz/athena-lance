@@ -74,9 +74,17 @@ código apuntando `control_function` e `ingest_function` al mismo nombre en `con
 
 ### Archivo por partición (ADR-012, `docs/plan-archivo-por-particion.md`)
 - Código escrito en el servicio (`write.rs`, `spec.rs`, `compact.rs`, `info.rs`, `control.rs`,
-  `ledger.rs`) y en lancego (`CreateOptions.Replace`), **sin compilar ni desplegar**. Falta:
+  `ledger.rs`), **sin compilar ni desplegar**. Falta:
   `cargo test -p lance-service`, `deploy/deploy.sh`, recrear las tablas de meteorología
-  (`agroclima/cmd lance -recrear -ejecutar`) y repetir las queries de prueba.
+  (`agroclima/cmd lance -recrear -ejecutar`, que ahora debe usar `DropTable` + `Create` porque
+  `CreateOptions.Replace` ya no existe) y repetir las queries de prueba.
+
+### Cambios de esquema (ADR-015)
+- `update_schema`, `create_or_update`, `drop_table` en el servicio (`ops/schema.rs`) y
+  `UpdateSchema`, `CreateOrUpdate`, `Client.DropTable` en lancego; `Replace` eliminado. Tests Go
+  pasan; Rust **sin compilar ni desplegar**. Falta `cargo test -p lance-service`, desplegar y probar
+  contra una tabla real: agregar una columna, quitar otra, cambiar un tipo (debe rechazarse), y
+  que un Save con el struct nuevo funcione sobre los archivos viejos.
 
 ### Funcionalidad
 - **Query en AWS**: el código está hecho (servicio + Go: `Query`, `Explain`,

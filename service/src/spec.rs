@@ -120,12 +120,15 @@ pub fn validate(schema: &Schema, mut spec: TableSpec) -> Result<TableSpec> {
         }
     }
 
-    // Every partition key gets a BITMAP index unless the caller declared a BTREE/BITMAP on it.
-    // Lance only skips files through scalar indexes, so this is what lets a query filtered by a
-    // partition read only that partition's files (one file per partition, ops/write.rs).
+    // Every partition key gets a BITMAP index unless the caller declared a BTREE/BITMAP/ZONEMAP on
+    // it. Lance only skips files through scalar indexes, so this is what lets a query filtered by a
+    // partition read only that partition's files (one file per partition, ops/write.rs). A ZONEMAP
+    // does it too: each file holds one partition, so its zones have min = max on every key, and the
+    // zone map stays a few rows per file instead of a table-wide bitmap rewritten on each write
+    // (docs/escrituras-concurrentes-y-costo-de-indices.md).
     for k in &spec.partition_keys {
         let declared = spec.indexes.iter().any(|ix| {
-            ix.column == *k && matches!(ix.index_type.to_uppercase().as_str(), "BTREE" | "BITMAP")
+            ix.column == *k && matches!(ix.index_type.to_uppercase().as_str(), "BTREE" | "BITMAP" | "ZONEMAP")
         });
         let indexable = top(k).is_some_and(|f| is_scalar(f.data_type()));
         if !declared && indexable {
@@ -227,6 +230,7 @@ pub fn is_partition_type(dt: &DataType) -> bool {
 }
 
 /// Differences between an incoming file schema and the table schema, for SCHEMA_MISMATCH.
+/// Column order does not matter: writes take the columns by name.
 pub fn schema_diff(table: &Schema, file: &Schema) -> Vec<String> {
     let mut diff = Vec::new();
     for f in table.fields() {
@@ -245,11 +249,6 @@ pub fn schema_diff(table: &Schema, file: &Schema) -> Vec<String> {
         if table.field_with_name(g.name()).is_err() {
             diff.push(format!("unknown column {}", g.name()));
         }
-    }
-    let order_differs = diff.is_empty()
-        && table.fields().iter().zip(file.fields().iter()).any(|(a, b)| a.name() != b.name());
-    if order_differs {
-        diff.push("columns are in a different order".into());
     }
     diff
 }
@@ -305,6 +304,14 @@ mod tests {
         let s = validate(&schema(), declared).unwrap();
         assert!(s.indexes.iter().any(|i| i.name.as_deref() == Some("filial_id_btree")));
         assert!(!s.indexes.iter().any(|i| i.name.as_deref() == Some("filial_id_bitmap")));
+
+        // So does a ZONEMAP: one file per partition makes its zones exact on the key.
+        let mut zoned = spec();
+        zoned.indexes.push(IndexSpec { column: "fecha".into(), index_type: "zonemap".into(), name: None });
+        let s = validate(&schema(), zoned).unwrap();
+        assert!(s.indexes.iter().any(|i| i.name.as_deref() == Some("fecha_zonemap")));
+        assert!(!s.indexes.iter().any(|i| i.name.as_deref() == Some("fecha_bitmap")));
+        assert!(s.indexes.iter().any(|i| i.name.as_deref() == Some("filial_id_bitmap")));
 
         // Validating twice gives the same spec (create_table compares the stored spec).
         let once = validate(&schema(), spec()).unwrap();

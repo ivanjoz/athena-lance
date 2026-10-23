@@ -10,6 +10,12 @@ use crate::spec::IndexSpec;
 pub enum Request {
     // lance-control
     CreateTable(CreateTable),
+    /// Same body as create_table: brings an existing table to these columns and indexes.
+    UpdateSchema(CreateTable),
+    /// update_schema, creating the table if it does not exist.
+    CreateOrUpdate(CreateTable),
+    /// Deletes the table (data, schema, versions) and its partition registry.
+    DropTable(TableRef),
     DescribeTable(TableRef),
     TableInfo(TableInfoReq),
     ListTables(Empty),
@@ -28,6 +34,9 @@ impl Request {
     pub fn op(&self) -> &'static str {
         match self {
             Request::CreateTable(_) => "create_table",
+            Request::UpdateSchema(_) => "update_schema",
+            Request::CreateOrUpdate(_) => "create_or_update",
+            Request::DropTable(_) => "drop_table",
             Request::DescribeTable(_) => "describe_table",
             Request::TableInfo(_) => "table_info",
             Request::ListTables(_) => "list_tables",
@@ -51,14 +60,20 @@ impl Request {
             | Request::GetBatch(_)
             | Request::Query(_)
             | Request::Explain(_) => true,
-            Request::CreateTable(_) | Request::Ingest(_) | Request::ReplacePartitions(_) | Request::Compact(_) => false,
+            Request::CreateTable(_)
+            | Request::UpdateSchema(_)
+            | Request::CreateOrUpdate(_)
+            | Request::DropTable(_)
+            | Request::Ingest(_)
+            | Request::ReplacePartitions(_)
+            | Request::Compact(_) => false,
         }
     }
 
     pub fn table(&self) -> Option<&str> {
         match self {
-            Request::CreateTable(r) => Some(&r.table),
-            Request::DescribeTable(r) | Request::ListPartitions(r) => Some(&r.table),
+            Request::CreateTable(r) | Request::UpdateSchema(r) | Request::CreateOrUpdate(r) => Some(&r.table),
+            Request::DescribeTable(r) | Request::ListPartitions(r) | Request::DropTable(r) => Some(&r.table),
             Request::TableInfo(r) => Some(&r.table),
             Request::GetBatch(r) => Some(&r.table),
             Request::Ingest(r) => Some(&r.table),
@@ -105,12 +120,9 @@ pub struct CreateTable {
     pub storage_version: String,
     #[serde(default)]
     pub field_compression: std::collections::BTreeMap<String, String>,
+    /// create_table only (update_schema and create_or_update ignore it).
     #[serde(default)]
     pub if_not_exists: bool,
-    /// If the table exists, overwrite it with an empty version with this schema and spec and
-    /// forget its partition registry. Excludes if_not_exists.
-    #[serde(default)]
-    pub replace: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

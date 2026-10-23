@@ -29,7 +29,7 @@ var VentasDef = lancego.TableDef{
 client, _ := lancego.New(ctx, lancego.Config{...}) // see Configuration
 ventas, _ := lancego.NewTable[Venta](client, VentasDef)
 
-ventas.Create(ctx, lancego.CreateOptions{IfNotExists: true})
+ventas.CreateOrUpdate(ctx, lancego.CreateOptions{}) // creates it, or adds/drops columns to match Venta
 res, _ := ventas.Save(ctx, rows, lancego.SaveOptions{})  // returns once the data is committed
 parts, _ := ventas.Partitions(ctx)                       // key, hash, id, rows, committed_at, version
 ventas.DeletePartitions(ctx, []any{1, "2026-10-01"})
@@ -131,8 +131,30 @@ the table declares a BTREE/BITMAP on it), and Lance skips files only through sca
 filtered by the partition keys reads only those partitions' files. `Compact` never merges files of a
 partitioned table; it only cleans up old versions.
 
-To change the layout or the indexes of an existing table, `Create` with `CreateOptions{Replace: true}`
-overwrites it with an empty version and forgets its registry; then write the data again.
+## Schema changes and dropping a table
+
+`Create` never touches an existing table. To follow changes of the row struct, call
+`UpdateSchema` (existing table) or `CreateOrUpdate` (creates it if missing). The service compares
+the columns by name and changes only metadata; no data file is rewritten:
+
+| Struct change | Effect on the table |
+|---|---|
+| new field | column added; the existing rows read it as null, so it is nullable in the table even if the field is not a pointer |
+| field removed | column dropped with its values (compaction removes its data later) |
+| `float64` → `*float64` | column made nullable |
+| `*float64` → `float64` | nothing (a non-null value always fits) |
+| type changed (`int32` → `int64`, `string` → `int`, …) | `SCHEMA_MISMATCH`, nothing changed |
+| field renamed | a drop plus an add: the old values are lost |
+| `index=` tags / `TableDef.Indexes` | indexes no longer declared are dropped, new ones built |
+| `PartitionKeys`, `SortKey`, storage version, a column's `compress=` | `TABLE_EXISTS_SPEC_MISMATCH` / `SCHEMA_MISMATCH`, nothing changed |
+
+Column order does not matter. Calling it with nothing to change is a no-op (`Changed=false`); if it
+fails halfway, calling it again finishes. It runs on the ingest function (building an index on a new
+column reads the whole table).
+
+The only way to delete a table is `client.DropTable(ctx, name)`: it deletes every file and version,
+the schema and the partition registry, and can't be undone. Changing what `UpdateSchema` rejects
+takes `DropTable`, `Create` and writing the data again.
 
 The service records each partition in DynamoDB (`ledger.dynamodb_table`): hash, partition ID
 (`GetParquetID`), `records_updated` (from `SaveOptions.RecordsUpdated`, stored as is), rows,

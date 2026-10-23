@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -28,6 +29,8 @@ type fakeService struct {
 	requests []replacePartitionsRequest
 	failNext bool
 	partRows map[string]int // rows currently stored per partition key
+	schemaOp []string       // "op@function" of each table schema request
+	schemas  []createTableRequest
 }
 
 func newFake() *fakeService {
@@ -135,6 +138,17 @@ func (f *fakeService) invoke(_ context.Context, function string, payload []byte,
 			return json.Marshal(envelope{RequestID: "r", Error: &APIError{Code: "BATCH_NOT_FOUND", Message: "not yet"}})
 		}
 		result = st
+	case "update_schema", "create_or_update":
+		var cr createTableRequest
+		if err := json.Unmarshal(payload, &cr); err != nil {
+			return nil, err
+		}
+		f.schemaOp = append(f.schemaOp, req.Op+"@"+function)
+		f.schemas = append(f.schemas, cr)
+		result = UpdateSchemaResult{Changed: true, Added: []string{"amount"}}
+	case "drop_table":
+		f.schemaOp = append(f.schemaOp, req.Op+"@"+function)
+		result = DropTableResult{Table: "ventas", FilesDeleted: 3}
 	default:
 		return nil, fmt.Errorf("unexpected op %s", req.Op)
 	}
@@ -190,6 +204,37 @@ func TestConfigRequiredAndDefaults(t *testing.T) {
 	if c.cfg.StagingPrefix != DefaultStagingPrefix || c.cfg.BatchRows != DefaultBatchRows ||
 		c.cfg.MaxRowsPerRequest != DefaultMaxRowsPerRequest || c.cfg.WaitTimeout != DefaultWaitTimeout {
 		t.Errorf("defaults not applied: %+v", c.cfg)
+	}
+}
+
+func TestSchemaChangesAndDrop(t *testing.T) {
+	tbl, fake := testTable(t)
+	ctx := context.Background()
+
+	up, err := tbl.UpdateSchema(ctx)
+	if err != nil || !up.Changed || len(up.Added) != 1 {
+		t.Fatalf("UpdateSchema = %+v, %v", up, err)
+	}
+	if _, err := tbl.CreateOrUpdate(ctx, CreateOptions{IfNotExists: true, StorageVersion: "2.3"}); err != nil {
+		t.Fatal(err)
+	}
+	dr, err := tbl.c.DropTable(ctx, "ventas")
+	if err != nil || dr.FilesDeleted != 3 {
+		t.Fatalf("DropTable = %+v, %v", dr, err)
+	}
+
+	// Schema changes run on the ingest function (index builds read the whole table).
+	want := []string{"update_schema@lance-ingest", "create_or_update@lance-ingest", "drop_table@lance-control"}
+	if !reflect.DeepEqual(fake.schemaOp, want) {
+		t.Fatalf("ops = %v, want %v", fake.schemaOp, want)
+	}
+	// UpdateSchema sends no storage version (the table keeps its own), CreateOrUpdate only that.
+	if s := fake.schemas[0]; s.StorageVersion != "" || s.Table != "ventas" || s.SchemaIPCB64 == "" ||
+		!reflect.DeepEqual(s.PartitionKeys, ventasDef.PartitionKeys) {
+		t.Fatalf("update_schema request = %+v", s)
+	}
+	if s := fake.schemas[1]; s.StorageVersion != "2.3" || s.IfNotExists {
+		t.Fatalf("create_or_update request = %+v", s)
 	}
 }
 

@@ -63,6 +63,11 @@ pub struct ServiceCfg {
     pub locks_prefix: String,
     pub lock_lease_seconds: u64,
     pub lock_wait_seconds: u64,
+    /// The same wait for create_table and drop_table, which run on the control function: it must
+    /// end before that function's timeout (120 s) so the caller gets TABLE_BUSY and not a
+    /// timed-out invoke.
+    #[serde(default = "default_control_lock_wait_seconds")]
+    pub control_lock_wait_seconds: u64,
     pub version_retention_hours: u64,
     pub batch_ttl_days: u64,
 }
@@ -72,6 +77,19 @@ pub struct Compaction {
     pub max_file_mb: u64,
     pub max_files: usize,
     pub max_tasks: usize,
+    /// Index segments one index may accumulate before a write merges them. Each write adds a
+    /// delta segment covering only its new files (ops/write.rs, `ensure_indexes`); every query
+    /// opens all segments of the indexes it uses, so they are merged back now and then.
+    #[serde(default = "default_max_index_segments")]
+    pub max_index_segments: usize,
+}
+
+fn default_control_lock_wait_seconds() -> u64 {
+    60
+}
+
+fn default_max_index_segments() -> usize {
+    32
 }
 
 #[derive(Debug, Clone, Deserialize)]

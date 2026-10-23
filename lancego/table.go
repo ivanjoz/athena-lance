@@ -87,24 +87,63 @@ func (t *Table[T]) Indexes() []IndexSpec    { return t.indexes }
 // CreateOptions tune create_table.
 type CreateOptions struct {
 	IfNotExists bool // return ok (created=false) if the table exists with the same spec
-	// Replace overwrites an existing table with an EMPTY one with this schema and spec, and
-	// forgets its partition registry (every partition is new again). Use it to change the
-	// layout or the indexes; the data has to be written again. Excludes IfNotExists.
-	Replace        bool
-	StorageVersion string // Lance file format; empty = service default ("2.2")
+	// StorageVersion is the Lance file format; empty = service default ("2.2"). In
+	// CreateOrUpdate, empty keeps the format of an existing table.
+	StorageVersion string
 }
 
 // Create asks lance-control to create the table from T's schema, sort key and indexes.
+// It never changes an existing table: UpdateSchema does, Client.DropTable deletes it.
 func (t *Table[T]) Create(ctx context.Context, opts CreateOptions) (*CreateTableResult, error) {
-	if opts.Replace && opts.IfNotExists {
-		return nil, fmt.Errorf("lancego: CreateOptions.Replace and IfNotExists exclude each other")
+	req, err := t.createRequest("create_table", opts)
+	if err != nil {
+		return nil, err
 	}
+	var out CreateTableResult
+	if err := t.c.invoke(ctx, t.c.cfg.ControlFunction, req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UpdateSchema brings an existing table to T's columns and indexes without rewriting data:
+// the service adds the new columns (null in the existing rows, so nullable in the table),
+// drops the columns T no longer has (their values are lost), makes a column nullable if T
+// now allows nil, and drops/builds indexes to match. A column whose type changed is rejected
+// (SCHEMA_MISMATCH) and nothing is changed; so is a change of PartitionKeys, SortKey or storage
+// version (TABLE_EXISTS_SPEC_MISMATCH). Renaming a field is a drop plus an add. Calling it
+// with nothing to change is a no-op (Changed=false).
+func (t *Table[T]) UpdateSchema(ctx context.Context) (*UpdateSchemaResult, error) {
+	return t.updateSchema(ctx, "update_schema", CreateOptions{})
+}
+
+// CreateOrUpdate creates the table if it does not exist and otherwise does UpdateSchema.
+// Only opts.StorageVersion is used.
+func (t *Table[T]) CreateOrUpdate(ctx context.Context, opts CreateOptions) (*UpdateSchemaResult, error) {
+	return t.updateSchema(ctx, "create_or_update", CreateOptions{StorageVersion: opts.StorageVersion})
+}
+
+// updateSchema runs on the ingest function: building the indexes of new columns reads the
+// whole table.
+func (t *Table[T]) updateSchema(ctx context.Context, op string, opts CreateOptions) (*UpdateSchemaResult, error) {
+	req, err := t.createRequest(op, opts)
+	if err != nil {
+		return nil, err
+	}
+	var out UpdateSchemaResult
+	if err := t.c.write(ctx, req, &out, false); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (t *Table[T]) createRequest(op string, opts CreateOptions) (*createTableRequest, error) {
 	schemaIPC, err := SchemaIPC(t.layout.schema)
 	if err != nil {
 		return nil, err
 	}
-	req := createTableRequest{
-		Op:             "create_table",
+	req := &createTableRequest{
+		Op:             op,
 		Table:          t.def.Name,
 		SchemaIPCB64:   base64.StdEncoding.EncodeToString(schemaIPC),
 		PartitionKeys:  t.def.PartitionKeys,
@@ -112,16 +151,11 @@ func (t *Table[T]) Create(ctx context.Context, opts CreateOptions) (*CreateTable
 		Indexes:        t.indexes,
 		StorageVersion: opts.StorageVersion,
 		IfNotExists:    opts.IfNotExists,
-		Replace:        opts.Replace,
 	}
 	if len(t.layout.fieldCompression) > 0 {
 		req.FieldCompression = t.layout.fieldCompression
 	}
-	var out CreateTableResult
-	if err := t.c.invoke(ctx, t.c.cfg.ControlFunction, req, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
+	return req, nil
 }
 
 // Describe returns the table descriptor from lance-control.

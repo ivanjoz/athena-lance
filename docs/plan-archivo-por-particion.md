@@ -68,7 +68,7 @@ quita el viejo entero, así que no hay nada que juntar. `compact` solo limpia ve
 
 ### 4. Servicio: recrear una tabla (`create_table` con `replace`)
 
-`create_table` acepta `replace: true` (excluyente con `if_not_exists`): si la tabla existe, la sobrescribe
+(Reemplazado por ADR-015: `update_schema` y `drop_table`.) `create_table` acepta `replace: true` (excluyente con `if_not_exists`): si la tabla existe, la sobrescribe
 con una versión vacía (`WriteMode::Overwrite`) con el esquema y spec nuevos, y borra su registro de
 particiones en DynamoDB. Es `Overwrite` y no un borrado del prefijo porque así las versiones siguen
 subiendo: el caché de datasets de las queries detecta la versión nueva como cualquier escritura, y una

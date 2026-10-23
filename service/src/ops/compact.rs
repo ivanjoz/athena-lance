@@ -29,6 +29,7 @@ use crate::app::{App, load_spec};
 use crate::error::{Error, Result, code};
 use crate::ledger::{self, BatchRecord};
 use crate::protocol::Compact;
+use crate::ops::write::ensure_indexes;
 use crate::spec::TableSpec;
 
 const MB: u64 = 1 << 20;
@@ -143,6 +144,8 @@ pub struct CompactResult {
     pub files_added: usize,
     /// More groups were eligible than `max_tasks`; call again.
     pub more: bool,
+    /// Spec indexes this call built (ones not built yet, e.g. after a failed update_schema).
+    pub indexes_built: Vec<String>,
     pub cleanup: Cleanup,
     pub already_applied: bool,
 }
@@ -172,6 +175,8 @@ async fn compact_locked(
     limits: CompactLimits,
     lock: &crate::lock::TableLock,
 ) -> Result<CompactResult> {
+    // Opened before waiting for the lock: a write or update_schema may have committed meanwhile.
+    ds.checkout_latest().await?;
     if let Some(prev) = app.ledger.get_batch(&req.table, &req.operation_id).await? {
         if prev.status == ledger::COMMITTED {
             return Ok(CompactResult {
@@ -184,6 +189,7 @@ async fn compact_locked(
                 files_removed: 0,
                 files_added: 0,
                 more: false,
+                indexes_built: vec![],
                 cleanup: Cleanup::default(),
                 already_applied: true,
             });
@@ -210,13 +216,15 @@ async fn compact_locked(
             max_bytes_per_file: Some(limits.max_file_bytes as usize),
             ..Default::default()
         };
-        let planner = SizeCountPlanner { spec, limits, options };
+        let planner = SizeCountPlanner { spec: spec.clone(), limits, options };
         lock.check()?;
         let metrics = if groups.is_empty() {
             Default::default()
         } else {
             compact_files_with_planner(ds, None, &planner).await?
         };
+        lock.check()?;
+        let indexes_built = ensure_indexes(ds, &spec, app.cfg.compaction.max_index_segments).await?;
         let retention = chrono::Duration::hours(app.cfg.service.version_retention_hours as i64);
         let stats = ds.cleanup_old_versions(retention, None, None).await?;
         Ok::<_, Error>(CompactResult {
@@ -229,6 +237,7 @@ async fn compact_locked(
             files_removed: metrics.files_removed,
             files_added: metrics.files_added,
             more,
+            indexes_built,
             cleanup: Cleanup { old_versions_removed: stats.old_versions, bytes_removed: stats.bytes_removed },
             already_applied: false,
         })
